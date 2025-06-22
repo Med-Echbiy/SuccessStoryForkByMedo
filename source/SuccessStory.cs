@@ -357,17 +357,120 @@ namespace SuccessStory
                         "    - Game ROM hash matching",
                         "    - RetroArch achievement data"
                     });
-                    break;
-
-                case SuccessStoryDatabase.AchievementSource.Local:
+                    break;                case SuccessStoryDatabase.AchievementSource.Local:
                     paths.AddRange(new[]
                     {
                         "  Source Type: Local Files",
-                        $"  Game Directory: {game.InstallDirectory}",
-                        "  Checking paths:",
-                        "    - Local achievement files",
-                        "    - Game-specific achievement data"
+                        $"  Game Directory: {game.InstallDirectory ?? "Not Set"}"
                     });
+                    
+                    // Add detailed local paths being checked
+                    paths.Add("  Checking paths:");
+                    if (!string.IsNullOrEmpty(game.InstallDirectory) && Directory.Exists(game.InstallDirectory))
+                    {
+                        // Common achievement file locations and patterns
+                        var localPaths = new List<string>
+                        {
+                            Path.Combine(game.InstallDirectory, "achievements.json"),
+                            Path.Combine(game.InstallDirectory, "stats"),
+                            Path.Combine(game.InstallDirectory, "saves"),
+                            Path.Combine(game.InstallDirectory, "data"),
+                            Path.Combine(game.InstallDirectory, "config"),
+                            Path.Combine(game.InstallDirectory, "userdata"),
+                            Path.Combine(game.InstallDirectory, "profiles"),
+                            Path.Combine(game.InstallDirectory, "progress")
+                        };
+                        
+                        // Check for common achievement file patterns
+                        var achievementPatterns = new[]
+                        {
+                            "*.json", "*.xml", "*.cfg", "*.ini", "*.dat", "*.sav", "*.save"
+                        };
+                        
+                        foreach (var localPath in localPaths)
+                        {
+                            if (File.Exists(localPath))
+                            {
+                                paths.Add($"    ✓ FOUND: {localPath}");
+                            }
+                            else if (Directory.Exists(localPath))
+                            {
+                                paths.Add($"    ✓ DIR EXISTS: {localPath}");
+                                
+                                // Check for achievement files in this directory
+                                try
+                                {
+                                    foreach (var pattern in achievementPatterns)
+                                    {
+                                        var files = Directory.GetFiles(localPath, pattern, SearchOption.TopDirectoryOnly);
+                                        if (files.Length > 0)
+                                        {
+                                            paths.Add($"      ✓ FOUND {files.Length} {pattern} files in {Path.GetFileName(localPath)}");
+                                            if (files.Length <= 5) // Show specific files if not too many
+                                            {
+                                                foreach (var file in files)
+                                                {
+                                                    paths.Add($"        - {Path.GetFileName(file)}");
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    paths.Add($"      ✗ ERROR reading directory: {ex.Message}");
+                                }
+                            }
+                            else
+                            {
+                                paths.Add($"    ✗ NOT FOUND: {localPath}");
+                            }
+                        }
+                        
+                        // Also check root directory for achievement files
+                        paths.Add($"    📁 Root directory scan: {game.InstallDirectory}");
+                        try
+                        {
+                            foreach (var pattern in achievementPatterns)
+                            {
+                                var rootFiles = Directory.GetFiles(game.InstallDirectory, pattern, SearchOption.TopDirectoryOnly);
+                                if (rootFiles.Length > 0)
+                                {
+                                    paths.Add($"      ✓ FOUND {rootFiles.Length} {pattern} files in root");
+                                    if (rootFiles.Length <= 3)
+                                    {
+                                        foreach (var file in rootFiles)
+                                        {
+                                            paths.Add($"        - {Path.GetFileName(file)}");
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // List all subdirectories for reference
+                            var subdirs = Directory.GetDirectories(game.InstallDirectory);
+                            if (subdirs.Length > 0)
+                            {
+                                paths.Add($"      📂 Available subdirectories ({subdirs.Length}):");
+                                foreach (var subdir in subdirs.Take(10)) // Show max 10 subdirs
+                                {
+                                    paths.Add($"        - {Path.GetFileName(subdir)}");
+                                }
+                                if (subdirs.Length > 10)
+                                {
+                                    paths.Add($"        ... and {subdirs.Length - 10} more directories");
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            paths.Add($"      ✗ ERROR scanning root directory: {ex.Message}");
+                        }
+                    }
+                    else
+                    {
+                        paths.Add("    ✗ Game directory not set or doesn't exist - cannot check local paths");
+                    }
                     break;
 
                 default:
@@ -451,10 +554,8 @@ namespace SuccessStory
             {
                 return "Error Retrieving";
             }
-        }
-
-        // Log refresh results after the refresh operation completes
-        public static void LogRefreshResults(Game game, GameAchievements beforeRefresh, GameAchievements afterRefresh)
+        }        // Log refresh results after the refresh operation completes
+        public static void LogRefreshResults(Game game, GameAchievements beforeRefresh, GameAchievements afterRefresh, SuccessStorySettingsViewModel pluginSettings)
         {
             try
             {
@@ -499,9 +600,7 @@ namespace SuccessStory
                 if ((beforeRefresh?.Unlocked ?? 0) != (afterRefresh?.Unlocked ?? 0))
                 {
                     resultEntries.Add($"  Unlocked Achievements: {beforeRefresh?.Unlocked ?? 0} → {afterRefresh?.Unlocked ?? 0}");
-                }
-
-                if (afterRefresh?.HasData == true && afterRefresh.Items?.Count > 0)
+                }                if (afterRefresh?.HasData == true && afterRefresh.Items?.Count > 0)
                 {
                     resultEntries.Add("");
                     resultEntries.Add("FOUND ACHIEVEMENTS:");
@@ -515,6 +614,78 @@ namespace SuccessStory
                     if (afterRefresh.Items.Count > 10)
                     {
                         resultEntries.Add($"  ... and {afterRefresh.Items.Count - 10} more achievements");
+                    }
+                      // For local achievements, try to identify where they were likely found
+                    SuccessStoryDatabase.AchievementSource source = SuccessStoryDatabase.GetAchievementSource(pluginSettings.Settings, game);
+                    if (source == SuccessStoryDatabase.AchievementSource.Local && !string.IsNullOrEmpty(game.InstallDirectory))
+                    {
+                        resultEntries.Add("");
+                        resultEntries.Add("LOCAL ACHIEVEMENT SOURCE ANALYSIS:");
+                        
+                        try
+                        {
+                            var possibleSources = new List<string>();
+                            
+                            // Check common achievement file locations
+                            var commonPaths = new[]
+                            {
+                                Path.Combine(game.InstallDirectory, "achievements.json"),
+                                Path.Combine(game.InstallDirectory, "stats"),
+                                Path.Combine(game.InstallDirectory, "saves"),
+                                Path.Combine(game.InstallDirectory, "data"),
+                                Path.Combine(game.InstallDirectory, "userdata")
+                            };
+                            
+                            foreach (var path in commonPaths)
+                            {
+                                if (File.Exists(path))
+                                {
+                                    var fileInfo = new FileInfo(path);
+                                    possibleSources.Add($"    ✓ File: {path} (Size: {fileInfo.Length} bytes, Modified: {fileInfo.LastWriteTime:yyyy-MM-dd HH:mm})");
+                                }
+                                else if (Directory.Exists(path))
+                                {
+                                    var dirInfo = new DirectoryInfo(path);
+                                    var fileCount = dirInfo.GetFiles("*", SearchOption.AllDirectories).Length;
+                                    possibleSources.Add($"    ✓ Directory: {path} ({fileCount} files, Modified: {dirInfo.LastWriteTime:yyyy-MM-dd HH:mm})");
+                                }
+                            }
+                            
+                            // Check for any recently modified files that might contain achievement data
+                            var recentFiles = Directory.GetFiles(game.InstallDirectory, "*", SearchOption.AllDirectories)
+                                .Where(f => {
+                                    try {
+                                        var ext = Path.GetExtension(f).ToLower();
+                                        return (ext == ".json" || ext == ".xml" || ext == ".cfg" || ext == ".dat" || ext == ".sav") 
+                                               && new FileInfo(f).LastWriteTime > DateTime.Now.AddMonths(-6);
+                                    } catch { return false; }
+                                })
+                                .OrderByDescending(f => new FileInfo(f).LastWriteTime)
+                                .Take(5);
+                                
+                            if (recentFiles.Any())
+                            {
+                                possibleSources.Add("    📅 Recently modified potential achievement files:");
+                                foreach (var file in recentFiles)
+                                {
+                                    var fileInfo = new FileInfo(file);
+                                    possibleSources.Add($"      - {file.Replace(game.InstallDirectory, ".")} ({fileInfo.LastWriteTime:yyyy-MM-dd HH:mm})");
+                                }
+                            }
+                            
+                            if (possibleSources.Any())
+                            {
+                                resultEntries.AddRange(possibleSources);
+                            }
+                            else
+                            {
+                                resultEntries.Add("    ⚠️  No obvious achievement files found - data may be embedded or in unexpected location");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            resultEntries.Add($"    ✗ Error analyzing local sources: {ex.Message}");
+                        }
                     }
                 }
 
@@ -713,14 +884,13 @@ namespace SuccessStory
                                     
                                     // Perform refresh
                                     PluginDatabase.Refresh(GameMenu.Id);
-                                    
-                                    // Capture after state and log results
+                                      // Capture after state and log results
                                     Task.Run(() =>
                                     {
                                         // Wait a moment for refresh to complete
                                         Thread.Sleep(2000);
                                         GameAchievements afterRefresh = PluginDatabase.Get(GameMenu, true);
-                                        LogRefreshResults(GameMenu, beforeRefresh, afterRefresh);
+                                        LogRefreshResults(GameMenu, beforeRefresh, afterRefresh, PluginSettings);
                                     });
                                 }
                                 else
