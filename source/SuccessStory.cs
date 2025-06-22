@@ -218,6 +218,329 @@ namespace SuccessStory
                 PlayniteApi.Dialogs.ShowMessage($"Steam AppId for {game.Name} has been set to {ViewExtension.SteamAppId.Value}.");
             }
         }
+
+        // Log detailed refresh action for debugging purposes
+        private void LogRefreshAction(Game game, List<Guid> gameIds)
+        {
+            try
+            {
+                string logPath = Path.Combine(PluginDatabase.Paths.PluginUserDataPath, "RefreshActionLogs");
+                Directory.CreateDirectory(logPath);
+                
+                string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+                string logFileName = $"RefreshLog_{timestamp}_{game.Id}.log";
+                string fullLogPath = Path.Combine(logPath, logFileName);
+
+                var logEntries = new List<string>
+                {
+                    "=".PadRight(80, '='),
+                    $"REFRESH DATA LOG - {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
+                    "=".PadRight(80, '='),
+                    "",
+                    $"GAME INFORMATION:",
+                    $"  Game ID: {game.Id}",
+                    $"  Game Name: {game.Name}",
+                    $"  Source: {game.Source?.Name ?? "Unknown"}",
+                    $"  Source ID: {game.SourceId}",
+                    $"  Platform: {(game.Platforms?.Count > 0 ? string.Join(", ", game.Platforms.Select(p => p.Name)) : "Unknown")}",
+                    $"  Install Directory: {game.InstallDirectory ?? "Not Set"}",
+                    $"  Installation Status: {(game.IsInstalled ? "Installed" : "Not Installed")}",
+                    $"  Hidden: {game.Hidden}",
+                    $"  Multiple Games Selected: {gameIds.Count > 1} (Total: {gameIds.Count})",
+                    "",
+                    $"ACHIEVEMENT SOURCE DETECTION:",
+                };
+
+                // Get achievement source
+                SuccessStoryDatabase.AchievementSource achievementSource = SuccessStoryDatabase.GetAchievementSource(PluginSettings.Settings, game);
+                logEntries.Add($"  Detected Source: {achievementSource}");
+
+                // Check game achievements data
+                GameAchievements gameAchievements = PluginDatabase.Get(game, true);
+                logEntries.AddRange(new[]
+                {
+                    "",
+                    $"CURRENT ACHIEVEMENT DATA:",
+                    $"  Has Data: {gameAchievements?.HasData ?? false}",
+                    $"  Is Manual: {gameAchievements?.IsManual ?? false}",
+                    $"  Is Ignored: {gameAchievements?.IsIgnored ?? false}",
+                    $"  Total Achievements: {gameAchievements?.Total ?? 0}",
+                    $"  Unlocked: {gameAchievements?.Unlocked ?? 0}",
+                    $"  Last Refresh: {gameAchievements?.DateLastRefresh.ToString("yyyy-MM-dd HH:mm:ss") ?? "Never"}",
+                    ""
+                });
+
+                // Log paths being checked based on source
+                logEntries.AddRange(GetPathsBeingChecked(game, achievementSource));
+
+                // Log plugin settings related to this source
+                logEntries.AddRange(GetRelevantPluginSettings(achievementSource));
+
+                // Write all log entries to file
+                File.WriteAllLines(fullLogPath, logEntries);
+                
+                Common.LogDebug(true, $"Refresh action logged to: {fullLogPath}");
+            }
+            catch (Exception ex)
+            {
+                Common.LogError(ex, false, "Failed to create refresh action log", true, PluginDatabase.PluginName);
+            }
+        }
+
+        private List<string> GetPathsBeingChecked(Game game, SuccessStoryDatabase.AchievementSource source)
+        {
+            var paths = new List<string>
+            {
+                "PATHS BEING CHECKED:"
+            };
+
+            switch (source)
+            {
+                case SuccessStoryDatabase.AchievementSource.Steam:
+                    paths.AddRange(new[]
+                    {
+                        "  Source Type: Steam",
+                        $"  Steam Install Directory: {game.InstallDirectory}",
+                        $"  Steam App ID: {GetSteamAppId(game)}",
+                        "  Checking paths:",
+                        "    - Steam web API for achievements",
+                        "    - Local Steam achievement files",
+                        "    - Steam user stats"
+                    });
+                    break;
+
+                case SuccessStoryDatabase.AchievementSource.Epic:
+                    paths.AddRange(new[]
+                    {
+                        "  Source Type: Epic Games Store",
+                        "  Checking paths:",
+                        "    - Epic Games launcher data",
+                        "    - Epic achievements API"
+                    });
+                    break;
+
+                case SuccessStoryDatabase.AchievementSource.GOG:
+                    paths.AddRange(new[]
+                    {
+                        "  Source Type: GOG",
+                        "  Checking paths:",
+                        "    - GOG Galaxy client data",
+                        "    - GOG achievements API"
+                    });
+                    break;
+
+                case SuccessStoryDatabase.AchievementSource.Origin:
+                    paths.AddRange(new[]
+                    {
+                        "  Source Type: Origin/EA",
+                        "  Checking paths:",
+                        "    - Origin client data",
+                        "    - EA achievements"
+                    });
+                    break;
+
+                case SuccessStoryDatabase.AchievementSource.Xbox:
+                    paths.AddRange(new[]
+                    {
+                        "  Source Type: Xbox Live",
+                        "  Checking paths:",
+                        "    - Xbox Live API",
+                        "    - Xbox Game Bar data"
+                    });
+                    break;                case SuccessStoryDatabase.AchievementSource.RetroAchievements:
+                    paths.AddRange(new[]
+                    {
+                        "  Source Type: RetroAchievements",
+                        $"  Game Directory: {game.InstallDirectory ?? "Not Set"}",
+                        "  Checking paths:",
+                        "    - RetroAchievements API",
+                        "    - Game ROM hash matching",
+                        "    - RetroArch achievement data"
+                    });
+                    break;
+
+                case SuccessStoryDatabase.AchievementSource.Local:
+                    paths.AddRange(new[]
+                    {
+                        "  Source Type: Local Files",
+                        $"  Game Directory: {game.InstallDirectory}",
+                        "  Checking paths:",
+                        "    - Local achievement files",
+                        "    - Game-specific achievement data"
+                    });
+                    break;
+
+                default:
+                    paths.AddRange(new[]
+                    {
+                        $"  Source Type: {source}",
+                        "  Checking default paths for this source type"
+                    });
+                    break;
+            }
+
+            return paths;
+        }
+
+        private List<string> GetRelevantPluginSettings(SuccessStoryDatabase.AchievementSource source)
+        {
+            var settings = new List<string>
+            {
+                "",
+                "RELEVANT PLUGIN SETTINGS:"
+            };            // Add general settings
+            settings.AddRange(new[]
+            {
+                $"  Enable Manual Achievements: {PluginSettings.Settings.EnableManual}",
+                $"  Enable RetroAchievements: {PluginSettings.Settings.EnableRetroAchievements}",
+                $"  Enable Steam: {PluginSettings.Settings.EnableSteam}",
+                $"  Enable GOG: {PluginSettings.Settings.EnableGog}",
+                $"  Enable Epic: {PluginSettings.Settings.EnableEpic}",
+                $"  Enable Origin: {PluginSettings.Settings.EnableOrigin}",
+                $"  Enable Xbox: {PluginSettings.Settings.EnableXbox}",
+                $"  Enable PSN: {PluginSettings.Settings.EnablePsn}",
+            });
+
+            // Add source-specific settings
+            switch (source)
+            {                case SuccessStoryDatabase.AchievementSource.Steam:
+                    settings.AddRange(new[]
+                    {
+                        "",
+                        "  STEAM-SPECIFIC SETTINGS:",
+                        $"    Steam User: {SuccessStory.SteamApi.CurrentAccountInfos?.Pseudo ?? "Not Set"}",
+                        $"    Steam API Key Set: {!string.IsNullOrEmpty(SuccessStory.SteamApi.CurrentAccountInfos?.ApiKey)}",
+                        $"    Steam Use Auth: {PluginSettings.Settings.SteamApiSettings.UseAuth}",
+                        $"    Steam Group Data: {PluginSettings.Settings.SteamGroupData}"
+                    });
+                    break;                case SuccessStoryDatabase.AchievementSource.RetroAchievements:
+                    settings.AddRange(new[]
+                    {
+                        "",
+                        "  RETROACHIEVEMENTS-SPECIFIC SETTINGS:",
+                        $"    RA Username Set: {!string.IsNullOrEmpty(PluginSettings.Settings.RetroAchievementsUser)}",
+                        $"    RA API Key Set: {!string.IsNullOrEmpty(PluginSettings.Settings.RetroAchievementsKey)}"
+                    });
+                    break;
+            }
+
+            return settings;
+        }        private string GetSteamAppId(Game game)
+        {
+            try
+            {
+                // Check if there's a forced Steam App ID
+                if (PluginSettings.Settings.ForcedSteamAppIds?.ContainsKey(game.Id) == true)
+                {
+                    return $"{PluginSettings.Settings.ForcedSteamAppIds[game.Id]} (Forced)";
+                }
+
+                // Try to get Steam App ID from common Steam API
+                if (SuccessStory.SteamApi != null)
+                {
+                    var steamAppId = SuccessStory.SteamApi.GetAppId(game.Name);
+                    if (steamAppId > 0)
+                    {
+                        return steamAppId.ToString();
+                    }
+                }
+
+                return "Not Found";
+            }
+            catch
+            {
+                return "Error Retrieving";
+            }
+        }
+
+        // Log refresh results after the refresh operation completes
+        public static void LogRefreshResults(Game game, GameAchievements beforeRefresh, GameAchievements afterRefresh)
+        {
+            try
+            {
+                string logPath = Path.Combine(PluginDatabase.Paths.PluginUserDataPath, "RefreshActionLogs");
+                string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+                string resultLogFileName = $"RefreshResults_{timestamp}_{game.Id}.log";
+                string fullResultLogPath = Path.Combine(logPath, resultLogFileName);
+
+                var resultEntries = new List<string>
+                {
+                    "=".PadRight(80, '='),
+                    $"REFRESH RESULTS LOG - {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
+                    "=".PadRight(80, '='),
+                    "",
+                    $"GAME: {game.Name} ({game.Id})",
+                    "",
+                    "BEFORE REFRESH:",
+                    $"  Had Data: {beforeRefresh?.HasData ?? false}",
+                    $"  Total Achievements: {beforeRefresh?.Total ?? 0}",
+                    $"  Unlocked: {beforeRefresh?.Unlocked ?? 0}",
+                    $"  Last Refresh: {beforeRefresh?.DateLastRefresh.ToString("yyyy-MM-dd HH:mm:ss") ?? "Never"}",
+                    "",
+                    "AFTER REFRESH:",
+                    $"  Has Data: {afterRefresh?.HasData ?? false}",
+                    $"  Total Achievements: {afterRefresh?.Total ?? 0}",
+                    $"  Unlocked: {afterRefresh?.Unlocked ?? 0}",
+                    $"  Last Refresh: {afterRefresh?.DateLastRefresh.ToString("yyyy-MM-dd HH:mm:ss") ?? "Never"}",
+                    "",
+                    "CHANGES DETECTED:",
+                    $"  Data Status Changed: {(beforeRefresh?.HasData ?? false) != (afterRefresh?.HasData ?? false)}",
+                    $"  Achievement Count Changed: {(beforeRefresh?.Total ?? 0) != (afterRefresh?.Total ?? 0)}",
+                    $"  Unlock Count Changed: {(beforeRefresh?.Unlocked ?? 0) != (afterRefresh?.Unlocked ?? 0)}",
+                    "",
+                    "DETAILED CHANGES:"
+                };
+
+                if ((beforeRefresh?.Total ?? 0) != (afterRefresh?.Total ?? 0))
+                {
+                    resultEntries.Add($"  Total Achievements: {beforeRefresh?.Total ?? 0} → {afterRefresh?.Total ?? 0}");
+                }
+
+                if ((beforeRefresh?.Unlocked ?? 0) != (afterRefresh?.Unlocked ?? 0))
+                {
+                    resultEntries.Add($"  Unlocked Achievements: {beforeRefresh?.Unlocked ?? 0} → {afterRefresh?.Unlocked ?? 0}");
+                }
+
+                if (afterRefresh?.HasData == true && afterRefresh.Items?.Count > 0)
+                {
+                    resultEntries.Add("");
+                    resultEntries.Add("FOUND ACHIEVEMENTS:");
+                    foreach (var achievement in afterRefresh.Items.Take(10)) // Show first 10 achievements
+                    {
+                        string status = achievement.DateWhenUnlocked.HasValue ? "✓ UNLOCKED" : "✗ LOCKED";
+                        string date = achievement.DateWhenUnlocked?.ToString("yyyy-MM-dd") ?? "Not unlocked";
+                        resultEntries.Add($"  {status} - {achievement.Name} ({date})");
+                    }
+                    
+                    if (afterRefresh.Items.Count > 10)
+                    {
+                        resultEntries.Add($"  ... and {afterRefresh.Items.Count - 10} more achievements");
+                    }
+                }
+
+                if (!(afterRefresh?.HasData ?? false))
+                {
+                    resultEntries.AddRange(new[]
+                    {
+                        "",
+                        "POSSIBLE REASONS FOR NO DATA:",
+                        "  - Game not supported by achievement source",
+                        "  - No achievements available for this game",
+                        "  - Configuration issue (API keys, user credentials)",
+                        "  - Network connectivity problem",
+                        "  - Game not properly detected by source platform",
+                        "  - Manual intervention required"
+                    });
+                }
+
+                File.WriteAllLines(fullResultLogPath, resultEntries);
+                Common.LogDebug(true, $"Refresh results logged to: {fullResultLogPath}");
+            }
+            catch (Exception ex)
+            {
+                Common.LogError(ex, false, "Failed to create refresh results log", true, PluginDatabase?.PluginName ?? "SuccessStory");
+            }
+        }
                 
         #endregion
 
@@ -369,9 +692,7 @@ namespace SuccessStory
                             MenuSection = ResourceProvider.GetString("LOCSuccessStory"),
                             Description = "-"
                         });
-                    }
-
-                    if (!gameAchievements.IsManual || (gameAchievements.IsManual && gameAchievements.HasData))
+                    }                    if (!gameAchievements.IsManual || (gameAchievements.IsManual && gameAchievements.HasData))
                     {
                         gameMenuItems.Add(new GameMenuItem
                         {
@@ -381,9 +702,26 @@ namespace SuccessStory
                             {
                                 IsFromMenu = true;
 
+                                // Create detailed refresh log
+                                LogRefreshAction(GameMenu, Ids);
+
+                                // Capture before state for single game refresh
+                                GameAchievements beforeRefresh = null;
                                 if (Ids.Count == 1)
                                 {
+                                    beforeRefresh = PluginDatabase.Get(GameMenu, true);
+                                    
+                                    // Perform refresh
                                     PluginDatabase.Refresh(GameMenu.Id);
+                                    
+                                    // Capture after state and log results
+                                    Task.Run(() =>
+                                    {
+                                        // Wait a moment for refresh to complete
+                                        Thread.Sleep(2000);
+                                        GameAchievements afterRefresh = PluginDatabase.Get(GameMenu, true);
+                                        LogRefreshResults(GameMenu, beforeRefresh, afterRefresh);
+                                    });
                                 }
                                 else
                                 {
