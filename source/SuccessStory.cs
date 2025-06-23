@@ -358,17 +358,98 @@ namespace SuccessStory
                         "    - RetroArch achievement data"
                     });
                     break;                case SuccessStoryDatabase.AchievementSource.Local:
+                    // Check if this looks like a Steam-like game (hybrid approach)
+                    bool isSteamLike = false;
+                    if (!string.IsNullOrEmpty(game.InstallDirectory) && Directory.Exists(game.InstallDirectory))
+                    {
+                        var valveIniPath = Path.Combine(game.InstallDirectory, "valve.ini");
+                        var profilePath = Path.Combine(game.InstallDirectory, "Profile");
+                        var steamSettingsPath = Path.Combine(game.InstallDirectory, "steam_settings");
+                        
+                        isSteamLike = File.Exists(valveIniPath) && (Directory.Exists(profilePath) || Directory.Exists(steamSettingsPath));
+                    }
+                    
                     paths.AddRange(new[]
                     {
-                        "  Source Type: Local Files",
+                        $"  Source Type: Local Files{(isSteamLike ? " (Steam-like detected)" : "")}",
                         $"  Game Directory: {game.InstallDirectory ?? "Not Set"}"
                     });
+                    
+                    if (isSteamLike)
+                    {
+                        paths.Add($"  Steam App ID: {GetSteamAppId(game)}");
+                    }
                     
                     // Add detailed local paths being checked
                     paths.Add("  Checking paths:");
                     if (!string.IsNullOrEmpty(game.InstallDirectory) && Directory.Exists(game.InstallDirectory))
                     {
-                        // Common achievement file locations and patterns
+                        if (isSteamLike)
+                        {
+                            // Check Steam-specific paths
+                            paths.Add("    🎮 STEAM-LIKE DETECTION:");
+                            var valveIni = Path.Combine(game.InstallDirectory, "valve.ini");
+                            var profileDir = Path.Combine(game.InstallDirectory, "Profile");
+                            var steamSettingsDir = Path.Combine(game.InstallDirectory, "steam_settings");
+                            
+                            if (File.Exists(valveIni))
+                            {
+                                paths.Add($"    ✓ FOUND: valve.ini");
+                            }
+                            
+                            if (Directory.Exists(profileDir))
+                            {
+                                paths.Add($"    ✓ FOUND: Profile directory");
+                                
+                                // Check for VALVE/Stats directory
+                                var valveStatsDir = Path.Combine(profileDir, "VALVE", "Stats");
+                                if (Directory.Exists(valveStatsDir))
+                                {
+                                    paths.Add($"    ✓ FOUND: Profile/VALVE/Stats directory");
+                                    
+                                    // Look for .Bin files (Steam achievement files)
+                                    try
+                                    {
+                                        var binFiles = Directory.GetFiles(valveStatsDir, "*.Bin", SearchOption.TopDirectoryOnly);
+                                        if (binFiles.Length > 0)
+                                        {
+                                            paths.Add($"    🏆 FOUND {binFiles.Length} Steam achievement .Bin files:");
+                                            foreach (var binFile in binFiles.Take(5)) // Show max 5 files
+                                            {
+                                                var fileInfo = new FileInfo(binFile);
+                                                paths.Add($"      - {Path.GetFileName(binFile)} ({fileInfo.Length} bytes, {fileInfo.LastWriteTime:yyyy-MM-dd HH:mm})");
+                                            }
+                                            if (binFiles.Length > 5)
+                                            {
+                                                paths.Add($"      ... and {binFiles.Length - 5} more .Bin files");
+                                            }
+                                        }
+                                        else
+                                        {
+                                            paths.Add($"    ✗ NO .Bin achievement files found in Profile/VALVE/Stats");
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        paths.Add($"    ✗ ERROR reading Profile/VALVE/Stats: {ex.Message}");
+                                    }
+                                }
+                                else
+                                {
+                                    paths.Add($"    ✗ NOT FOUND: Profile/VALVE/Stats directory");
+                                }
+                            }
+                            
+                            if (Directory.Exists(steamSettingsDir))
+                            {
+                                paths.Add($"    ✓ FOUND: steam_settings directory");
+                            }
+                            
+                            paths.Add("");
+                        }
+                        
+                        // Standard local achievement detection
+                        paths.Add("    📁 STANDARD LOCAL DETECTION:");
                         var localPaths = new List<string>
                         {
                             Path.Combine(game.InstallDirectory, "achievements.json"),
@@ -384,7 +465,7 @@ namespace SuccessStory
                         // Check for common achievement file patterns
                         var achievementPatterns = new[]
                         {
-                            "*.json", "*.xml", "*.cfg", "*.ini", "*.dat", "*.sav", "*.save"
+                            "*.json", "*.xml", "*.cfg", "*.ini", "*.dat", "*.sav", "*.save", "*.Bin"
                         };
                         
                         foreach (var localPath in localPaths)
@@ -614,8 +695,7 @@ namespace SuccessStory
                     if (afterRefresh.Items.Count > 10)
                     {
                         resultEntries.Add($"  ... and {afterRefresh.Items.Count - 10} more achievements");
-                    }
-                      // For local achievements, try to identify where they were likely found
+                    }                      // For local achievements, try to identify where they were likely found
                     SuccessStoryDatabase.AchievementSource source = SuccessStoryDatabase.GetAchievementSource(pluginSettings.Settings, game);
                     if (source == SuccessStoryDatabase.AchievementSource.Local && !string.IsNullOrEmpty(game.InstallDirectory))
                     {
@@ -625,6 +705,34 @@ namespace SuccessStory
                         try
                         {
                             var possibleSources = new List<string>();
+                            
+                            // Check for Steam-like files first
+                            var valveIniPath = Path.Combine(game.InstallDirectory, "valve.ini");
+                            var profilePath = Path.Combine(game.InstallDirectory, "Profile");
+                            var steamSettingsPath = Path.Combine(game.InstallDirectory, "steam_settings");
+                            
+                            bool isSteamLike = File.Exists(valveIniPath) && (Directory.Exists(profilePath) || Directory.Exists(steamSettingsPath));
+                            if (isSteamLike)
+                            {
+                                possibleSources.Add("    🎮 STEAM-LIKE GAME DETECTED:");
+                                possibleSources.Add($"    ✓ Found valve.ini and Steam-like structure");
+                                
+                                var valveStatsPath = Path.Combine(profilePath, "VALVE", "Stats");
+                                if (Directory.Exists(valveStatsPath))
+                                {
+                                    var binFiles = Directory.GetFiles(valveStatsPath, "*.Bin", SearchOption.TopDirectoryOnly);
+                                    if (binFiles.Length > 0)
+                                    {
+                                        possibleSources.Add($"    🏆 Found {binFiles.Length} Steam achievement .Bin files:");
+                                        foreach (var binFile in binFiles.Take(3))
+                                        {
+                                            var fileInfo = new FileInfo(binFile);
+                                            possibleSources.Add($"      - {Path.GetFileName(binFile)} ({fileInfo.Length} bytes, {fileInfo.LastWriteTime:yyyy-MM-dd HH:mm})");
+                                        }
+                                        possibleSources.Add($"    ✓ Achievements likely loaded from Steam .Bin files");
+                                    }
+                                }
+                            }
                             
                             // Check common achievement file locations
                             var commonPaths = new[]
@@ -656,14 +764,14 @@ namespace SuccessStory
                                 .Where(f => {
                                     try {
                                         var ext = Path.GetExtension(f).ToLower();
-                                        return (ext == ".json" || ext == ".xml" || ext == ".cfg" || ext == ".dat" || ext == ".sav") 
+                                        return (ext == ".json" || ext == ".xml" || ext == ".cfg" || ext == ".dat" || ext == ".sav" || ext == ".bin") 
                                                && new FileInfo(f).LastWriteTime > DateTime.Now.AddMonths(-6);
                                     } catch { return false; }
                                 })
                                 .OrderByDescending(f => new FileInfo(f).LastWriteTime)
                                 .Take(5);
                                 
-                            if (recentFiles.Any())
+                            if (recentFiles.Any() && !isSteamLike)
                             {
                                 possibleSources.Add("    📅 Recently modified potential achievement files:");
                                 foreach (var file in recentFiles)

@@ -20,6 +20,7 @@ using System.Collections.ObjectModel;
 using CommonPluginsStores.Models;
 using CommonPluginsStores.Steam.Models.SteamKit;
 using System.Dynamic;
+using Newtonsoft.Json.Linq;
 namespace SuccessStory.Clients
 {
     class SteamEmulators : GenericAchievements
@@ -119,57 +120,112 @@ namespace SuccessStory.Clients
                              .Where(x => x % 2 == 0)
                              .Select(x => Convert.ToByte(hex.Substring(x, 2), 16))
                              .ToArray();
-        }
-
-        public GameAchievements GetAchievementsLocal(Game game, string apiKey, uint AppIdd = 0, bool IsManual = false)
+        }        public GameAchievements GetAchievementsLocal(Game game, string apiKey, uint AppIdd = 0, bool IsManual = false)
         {
-            GameAchievements gameAchievements = SuccessStory.PluginDatabase.GetDefault(game);
-            GameAchievements gameAchievementsCached = SuccessStory.PluginDatabase.Get(game, true);
+            // Create detailed log file for SteamEmulators debugging
+            string logPath = Path.Combine(SuccessStory.PluginDatabase.Paths.PluginUserDataPath, "RefreshActionLogs");
+            Directory.CreateDirectory(logPath);
+            string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+            string steamEmuLogFileName = $"SteamEmulators_{timestamp}_{game.Id}.log";
+            string fullSteamEmuLogPath = Path.Combine(logPath, steamEmuLogFileName);
+            var steamEmuLogEntries = new List<string>();
 
-            // Check for forced AppId first
-            if (SuccessStory.PluginDatabase.PluginSettings.Settings.ForcedSteamAppIds != null &&
-                SuccessStory.PluginDatabase.PluginSettings.Settings.ForcedSteamAppIds.TryGetValue(game.Id, out int forcedAppId))
+            try
             {
-                this.AppId = (uint)forcedAppId;
-            }
-            else
-            {
-                this.AppId = AppId != 0 ? AppId : steamApi.GetAppId(game.Name);
-            }
-
-            SteamEmulatorData data = Get(game, this.AppId, apiKey, IsManual);
-
-            if (gameAchievementsCached == null)
-            {
-                gameAchievements.Items = data.Achievements;
-                gameAchievements.ItemsStats = data.Stats;
-                gameAchievements.SetRaretyIndicator();
-                return gameAchievements;
-            }
-            else
-            {
-                if (gameAchievementsCached.Items.Count != data.Achievements.Count)
+                steamEmuLogEntries.AddRange(new[]
                 {
+                    "=".PadRight(80, '='),
+                    $"STEAM EMULATORS LOG - {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
+                    "=".PadRight(80, '='),
+                    "",
+                    $"🚀 STARTING GetAchievementsLocal for {game.Name}",
+                    $"   AppIdd parameter: {AppIdd}",
+                    $"   IsManual: {IsManual}",
+                    ""
+                });
+
+                GameAchievements gameAchievements = SuccessStory.PluginDatabase.GetDefault(game);
+                GameAchievements gameAchievementsCached = SuccessStory.PluginDatabase.Get(game, true);
+
+                // Check for forced AppId first
+                if (SuccessStory.PluginDatabase.PluginSettings.Settings.ForcedSteamAppIds != null &&
+                    SuccessStory.PluginDatabase.PluginSettings.Settings.ForcedSteamAppIds.TryGetValue(game.Id, out int forcedAppId))
+                {
+                    this.AppId = (uint)forcedAppId;
+                    steamEmuLogEntries.Add($"   Using forced Steam App ID: {this.AppId}");
+                }
+                else
+                {
+                    this.AppId = AppId != 0 ? AppId : steamApi.GetAppId(game.Name);
+                    steamEmuLogEntries.Add($"   Using detected Steam App ID: {this.AppId}");
+                }
+
+                steamEmuLogEntries.Add($"📞 Calling Get() method...");
+                SteamEmulatorData data = Get(game, this.AppId, apiKey, IsManual, steamEmuLogEntries);
+                steamEmuLogEntries.Add($"📞 Get() method returned: {data.Achievements.Count} achievements, {data.Stats.Count} stats");
+
+                if (gameAchievementsCached == null)
+                {
+                    steamEmuLogEntries.Add($"   💾 No cached data - using fresh data");
                     gameAchievements.Items = data.Achievements;
                     gameAchievements.ItemsStats = data.Stats;
                     gameAchievements.SetRaretyIndicator();
+                    
+                    steamEmuLogEntries.Add($"🎯 FINAL RESULT (no cache): {gameAchievements.Items.Count} achievements");
+                    
+                    // Write log before returning
+                    File.WriteAllLines(fullSteamEmuLogPath, steamEmuLogEntries);
                     return gameAchievements;
                 }
-                gameAchievementsCached.Items.ForEach(x =>
+                else
                 {
-                    Achievements finded = data.Achievements.Find(y => x.ApiName == y.ApiName);
-                    if (finded != null)
+                    steamEmuLogEntries.Add($"   💾 Found cached data with {gameAchievementsCached.Items.Count} achievements");
+                    
+                    if (gameAchievementsCached.Items.Count != data.Achievements.Count)
                     {
-                        x.Name = finded.Name;
-                        if (x.DateUnlocked == null || x.DateUnlocked == default(DateTime))
-                        {
-                            x.DateUnlocked = finded.DateUnlocked;
-                        }
+                        steamEmuLogEntries.Add($"   🔄 Achievement count changed ({gameAchievementsCached.Items.Count} → {data.Achievements.Count}) - using fresh data");
+                        gameAchievements.Items = data.Achievements;
+                        gameAchievements.ItemsStats = data.Stats;
+                        gameAchievements.SetRaretyIndicator();
+                        
+                        steamEmuLogEntries.Add($"🎯 FINAL RESULT (count changed): {gameAchievements.Items.Count} achievements");
+                        
+                        // Write log before returning
+                        File.WriteAllLines(fullSteamEmuLogPath, steamEmuLogEntries);
+                        return gameAchievements;
                     }
-                });
-                gameAchievementsCached.ItemsStats = data.Stats;
-                gameAchievementsCached.SetRaretyIndicator();
-                return gameAchievementsCached;
+                    
+                    steamEmuLogEntries.Add($"   🔄 Merging cached data with fresh data...");
+                    gameAchievementsCached.Items.ForEach(x =>
+                    {
+                        Achievements finded = data.Achievements.Find(y => x.ApiName == y.ApiName);
+                        if (finded != null)
+                        {
+                            x.Name = finded.Name;
+                            if (x.DateUnlocked == null || x.DateUnlocked == default(DateTime))
+                            {
+                                x.DateUnlocked = finded.DateUnlocked;
+                            }
+                        }
+                    });
+                    gameAchievementsCached.ItemsStats = data.Stats;
+                    gameAchievementsCached.SetRaretyIndicator();
+                    
+                    steamEmuLogEntries.Add($"🎯 FINAL RESULT (merged): {gameAchievementsCached.Items.Count} achievements");
+                    
+                    // Write log before returning
+                    File.WriteAllLines(fullSteamEmuLogPath, steamEmuLogEntries);
+                    return gameAchievementsCached;
+                }
+            }
+            catch (Exception ex)
+            {
+                steamEmuLogEntries.Add($"💥 ERROR in GetAchievementsLocal: {ex.Message}");
+                steamEmuLogEntries.Add($"   Stack trace: {ex.StackTrace}");
+                
+                // Write error log
+                File.WriteAllLines(fullSteamEmuLogPath, steamEmuLogEntries);
+                throw;
             }
         }
 
@@ -612,16 +668,50 @@ namespace SuccessStory.Clients
             return ReturnAchievements;
         }
                
-        
-        private SteamEmulatorData Get(Game game, uint appId, string apiKey, bool IsManual)
+        private SteamEmulatorData Get(Game game, uint appId, string apiKey, bool IsManual, List<string> logEntries = null)
         {
             List<Achievements> ReturnAchievements = new List<Achievements>();
-            List<GameStats> ReturnStats = new List<GameStats>();
-
-            if (!IsManual)
+            List<GameStats> ReturnStats = new List<GameStats>();            if (!IsManual)
             {
+                // First check for Steam-like games in game install directory
+                if (!string.IsNullOrEmpty(game.InstallDirectory) && Directory.Exists(game.InstallDirectory))
+                {
+                    logEntries?.Add($"🎮 STARTING Steam-like detection for {game.Name}");
+                    logEntries?.Add($"   Game directory: {game.InstallDirectory}");
+                    logEntries?.Add($"   Steam App ID: {appId}");
+                    
+                    var steamLikeData = CheckSteamLikeGame(game, logEntries);
+                    
+                    logEntries?.Add($"🔍 Steam-like detection COMPLETE for {game.Name}:");
+                    logEntries?.Add($"   Achievements found: {steamLikeData.Achievements.Count}");
+                    logEntries?.Add($"   Stats found: {steamLikeData.Stats.Count}");
+                    
+                    if (steamLikeData.Achievements.Count > 0)
+                    {
+                        logEntries?.Add($"✅ ADDING {steamLikeData.Achievements.Count} Steam-like achievements for {game.Name}");
+                        foreach (var achievement in steamLikeData.Achievements.Take(5))
+                        {
+                            logEntries?.Add($"   - {achievement.ApiName} (Unlocked: {achievement.DateUnlocked.HasValue})");
+                        }
+                        if (steamLikeData.Achievements.Count > 5)
+                        {
+                            logEntries?.Add($"   ... and {steamLikeData.Achievements.Count - 5} more achievements");
+                        }
+                        
+                        ReturnAchievements.AddRange(steamLikeData.Achievements);
+                        ReturnStats.AddRange(steamLikeData.Stats);
+                    }
+                    else
+                    {
+                        logEntries?.Add($"❌ No Steam-like achievements found for {game.Name}");
+                    }
+                }
+                else
+                {
+                    logEntries?.Add($"⚠️  Game directory not available for Steam-like detection: {game.InstallDirectory ?? "NULL"}");
+                }
 
-                // Search data local
+                // Search data local in emulator directories
                 foreach (string DirAchivements in AchievementsDirectories)
                 {
                     switch (DirAchivements.ToLower())
@@ -770,17 +860,15 @@ namespace SuccessStory.Clients
                                 string Name = string.Empty;
                                 DateTime? DateUnlocked = null;
 
-                                string jsonText = File.ReadAllText(Environment.ExpandEnvironmentVariables(DirAchivements) + $"\\{AppId}\\achievements.json");                               
-                                foreach (dynamic achievement in Serialization.FromJson<dynamic>(jsonText))
+                                string jsonText = File.ReadAllText(Environment.ExpandEnvironmentVariables(DirAchivements) + $"\\{AppId}\\achievements.json");                                 foreach (dynamic achievement in Serialization.FromJson<dynamic>(jsonText))
                                 {
-                                    // eFMann - added an exlusions to remove [''] from APIName for games like Forza Horizon 4
-                                    Name = achievement.Name?.ToString() ?? ((DynamicObject)achievement).GetDynamicMemberNames().First();
-                                    /* 
-                                     // Pottentially added/replace it in if later some achievements don't work
-                                     Name = achievement.Name?.ToString() ?? 
-       ((DynamicObject)achievement).GetDynamicMemberNames().FirstOrDefault() ?? 
-       achievement.Path; // Fallback to original behavior if everything else fails
-                                    */
+                                    // eFMann - added an exclusion to remove [''] from APIName for games like Forza Horizon 4
+                                    // Fixed: Handle JObject instead of DynamicObject
+                                    Name = achievement.Name?.ToString();
+                                    if (string.IsNullOrEmpty(Name) && achievement is Newtonsoft.Json.Linq.JObject jObj)
+                                    {
+                                        Name = jObj.Properties().FirstOrDefault()?.Name ?? string.Empty;
+                                    }
 
 
                                     dynamic elements = achievement.First;
@@ -810,9 +898,7 @@ namespace SuccessStory.Clients
                                 }
                             }
 
-                            break;
-
-                        case "%public%\\documents\\empress": // eFMann - added EMPRESS case    
+                            break;                        case "%public%\\documents\\empress": // eFMann - added EMPRESS case    
                         case "%appdata%\\empress": // eFMann - added EMPRESS case
                             if (File.Exists(Environment.ExpandEnvironmentVariables(DirAchivements) + $"\\{AppId}\\remote\\{AppId}\\achievements.json"))
                             {
@@ -822,8 +908,13 @@ namespace SuccessStory.Clients
                                 string jsonText = File.ReadAllText(Environment.ExpandEnvironmentVariables(DirAchivements) + $"\\{AppId}\\remote\\{AppId}\\achievements.json");
                                 foreach (dynamic achievement in Serialization.FromJson<dynamic>(jsonText))
                                 {
-                                    // eFMann - added an exlusions to remove [''] from APIName for games like Forza Horizon 4
-                                    Name = achievement.Name?.ToString() ?? ((DynamicObject)achievement).GetDynamicMemberNames().First();
+                                    // eFMann - added an exclusion to remove [''] from APIName for games like Forza Horizon 4
+                                    // Fixed: Handle JObject instead of DynamicObject
+                                    Name = achievement.Name?.ToString();
+                                    if (string.IsNullOrEmpty(Name) && achievement is Newtonsoft.Json.Linq.JObject jObj)
+                                    {
+                                        Name = jObj.Properties().FirstOrDefault()?.Name ?? string.Empty;
+                                    }
 
                                     dynamic elements = achievement.First;
                                     dynamic unlockedTimeToken = elements.SelectToken("earned_time");
@@ -1071,16 +1162,20 @@ namespace SuccessStory.Clients
 
                         case "%localappdata%\\skidrow":
                             Common.LogDebug(true, $"No treatment for {DirAchivements}");
-                            break;
-
-                        default: // eFMann - added Custom Folder Paths case
+                            break;                        default: // eFMann - added Custom Folder Paths case
                             if (ReturnAchievements.Count == 0)
                             {
                                 Folder finded = PluginDatabase.PluginSettings.Settings.LocalPath.Find(x => x.FolderPath.IsEqual(DirAchivements));
                                 Guid.TryParse(finded?.GameId, out Guid GameId);
 
+                                // Check for Steam-like .Bin files in custom directories
+                                if (CheckCustomDirectoryForSteamLikeFiles(DirAchivements, out var steamLikeAchievements))
+                                {
+                                    Logger.Info($"Found Steam-like .Bin files in custom directory: {DirAchivements}");
+                                    ReturnAchievements.AddRange(steamLikeAchievements);
+                                }
                                 // Check for Goldberg format (achievements.json)
-                                if (File.Exists(DirAchivements + $"\\{AppId}\\achievements.json"))
+                                else if (File.Exists(DirAchivements + $"\\{AppId}\\achievements.json"))
                                 {
                                     string Name = string.Empty;
                                     DateTime? DateUnlocked = null;
@@ -1123,11 +1218,15 @@ namespace SuccessStory.Clients
                                     string Name = string.Empty;
                                     DateTime? DateUnlocked = null;
 
-                                    string jsonText = File.ReadAllText(DirAchivements + $"\\{AppId}\\remote\\{AppId}\\achievements.json");
-                                    foreach (dynamic achievement in Serialization.FromJson<dynamic>(jsonText))
+                                    string jsonText = File.ReadAllText(DirAchivements + $"\\{AppId}\\remote\\{AppId}\\achievements.json");                                    foreach (dynamic achievement in Serialization.FromJson<dynamic>(jsonText))
                                     {
-                                        // eFMann - added an exlusions to remove [''] from APIName for games like Forza Horizon 4
-                                        Name = achievement.Name?.ToString() ?? ((DynamicObject)achievement).GetDynamicMemberNames().First();
+                                        // eFMann - added an exclusion to remove [''] from APIName for games like Forza Horizon 4
+                                        // Fixed: Handle JObject instead of DynamicObject
+                                        Name = achievement.Name?.ToString();
+                                        if (string.IsNullOrEmpty(Name) && achievement is Newtonsoft.Json.Linq.JObject jObj)
+                                        {
+                                            Name = jObj.Properties().FirstOrDefault()?.Name ?? string.Empty;
+                                        }
 
                                         dynamic elements = achievement.First;
                                         dynamic unlockedTimeToken = elements.SelectToken("earned_time");
@@ -1322,15 +1421,42 @@ namespace SuccessStory.Clients
                     return new SteamEmulatorData { Achievements = new List<Achievements>(), Stats = new List<GameStats>() };
                 }
             }
-            #endregion
+            #endregion            // Delete empty (SteamEmu) - but preserve Steam-like achievements
+            int beforeFiltering = ReturnAchievements.Count;
+            ReturnAchievements = ReturnAchievements.Select(x => x).Where(x => 
+                !string.IsNullOrEmpty(x.UrlLocked) || // Keep achievements with locked URLs (SteamEmu)
+                !string.IsNullOrEmpty(x.ApiName)      // Keep Steam-like achievements with API names
+            ).ToList();
+            int afterFiltering = ReturnAchievements.Count;
 
-            // Delete empty (SteamEmu)
-            ReturnAchievements = ReturnAchievements.Select(x => x).Where(x => !string.IsNullOrEmpty(x.UrlLocked)).ToList();
+            logEntries?.Add($"🗂️  FILTERING RESULTS:");
+            logEntries?.Add($"   Before filtering: {beforeFiltering} achievements");
+            logEntries?.Add($"   After filtering: {afterFiltering} achievements");
+            logEntries?.Add($"   Filtered out: {beforeFiltering - afterFiltering} achievements");
 
             // Make sure achievements are marked to show rarity
             foreach (var achievement in ReturnAchievements)
             {
                 achievement.NoRarety = false;  // Explicitly ensure NoRarety is false
+            }
+
+            logEntries?.Add($"🎯 FINAL Get() results: {ReturnAchievements.Count} total achievements, {ReturnStats.Count} stats");
+            if (ReturnAchievements.Count > 0)
+            {
+                logEntries?.Add($"   📋 Achievement breakdown:");
+                var steamLikeCount = ReturnAchievements.Count(a => string.IsNullOrEmpty(a.UrlLocked) && !string.IsNullOrEmpty(a.ApiName));
+                var steamEmuCount = ReturnAchievements.Count(a => !string.IsNullOrEmpty(a.UrlLocked));
+                logEntries?.Add($"     - Steam-like achievements: {steamLikeCount}");
+                logEntries?.Add($"     - SteamEmu achievements: {steamEmuCount}");
+                
+                foreach (var ach in ReturnAchievements.Take(5))
+                {
+                    logEntries?.Add($"     - {ach.ApiName}: {(ach.DateUnlocked.HasValue ? "UNLOCKED" : "LOCKED")} (Type: {(string.IsNullOrEmpty(ach.UrlLocked) ? "Steam-like" : "SteamEmu")})");
+                }
+                if (ReturnAchievements.Count > 5)
+                {
+                    logEntries?.Add($"     ... and {ReturnAchievements.Count - 5} more achievements");
+                }
             }
 
             return new SteamEmulatorData
@@ -1389,10 +1515,319 @@ namespace SuccessStory.Clients
                     }
                 }
                 file.Close();
+            }            return ReturnAchievements;        }
+
+        /// <summary>
+        /// Checks custom directories for Steam-like .Bin files
+        /// </summary>
+        private bool CheckCustomDirectoryForSteamLikeFiles(string directory, out List<Achievements> achievements)
+        {
+            achievements = new List<Achievements>();
+
+            try
+            {
+                // Expand environment variables
+                string expandedDir = Environment.ExpandEnvironmentVariables(directory);
+                
+                if (!Directory.Exists(expandedDir))
+                {
+                    return false;
+                }
+
+                // Look for common Steam-like patterns in custom directories
+                var possiblePaths = new List<string>
+                {
+                    Path.Combine(expandedDir, $"{AppId}"), // Direct AppId folder
+                    Path.Combine(expandedDir, "Profile", "VALVE", "Stats"), // Steam-like structure
+                    Path.Combine(expandedDir, "VALVE", "Stats"), // Simplified structure
+                    expandedDir // Direct directory
+                };
+
+                foreach (var path in possiblePaths)
+                {
+                    if (Directory.Exists(path))
+                    {
+                        // Look for .Bin files
+                        var binFiles = Directory.GetFiles(path, "*.Bin", SearchOption.TopDirectoryOnly);
+                        if (binFiles.Length > 0)
+                        {
+                            Logger.Info($"Found {binFiles.Length} .Bin files in custom directory: {path}");
+                            
+                            foreach (var binFile in binFiles)
+                            {
+                                var parsedAchievements = ParseSteamBinFile(binFile);
+                                achievements.AddRange(parsedAchievements);
+                            }
+                            
+                            if (achievements.Count > 0)
+                            {
+                                return true;
+                            }
+                        }
+
+                        // Also check for appid-specific .Bin files
+                        var appIdBinFiles = Directory.GetFiles(path, $"*{AppId}*.Bin", SearchOption.TopDirectoryOnly);
+                        if (appIdBinFiles.Length > 0)
+                        {
+                            Logger.Info($"Found {appIdBinFiles.Length} AppId-specific .Bin files in: {path}");
+                            
+                            foreach (var binFile in appIdBinFiles)
+                            {
+                                var parsedAchievements = ParseSteamBinFile(binFile);
+                                achievements.AddRange(parsedAchievements);
+                            }
+                            
+                            if (achievements.Count > 0)
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, $"Error checking custom directory for Steam-like files: {directory}");
             }
 
-            return ReturnAchievements;
+            return false;
         }
+
+        #region Steam-like Game Detection        /// <summary>
+        /// Checks if a game has Steam-like achievement files in its install directory
+        /// </summary>
+        private SteamEmulatorData CheckSteamLikeGame(Game game, List<string> logEntries = null)
+        {
+            List<Achievements> achievements = new List<Achievements>();
+            List<GameStats> stats = new List<GameStats>();
+
+            try
+            {
+                logEntries?.Add($"🔍 CHECKING Steam-like indicators for {game.Name}");
+                
+                // Check for Steam-like indicators
+                var valveIniPath = Path.Combine(game.InstallDirectory, "valve.ini");
+                var profilePath = Path.Combine(game.InstallDirectory, "Profile");
+                var steamSettingsPath = Path.Combine(game.InstallDirectory, "steam_settings");
+
+                logEntries?.Add($"   valve.ini exists: {File.Exists(valveIniPath)}");
+                logEntries?.Add($"   Profile directory exists: {Directory.Exists(profilePath)}");
+                logEntries?.Add($"   steam_settings directory exists: {Directory.Exists(steamSettingsPath)}");
+
+                bool isSteamLike = File.Exists(valveIniPath) && (Directory.Exists(profilePath) || Directory.Exists(steamSettingsPath));
+                logEntries?.Add($"   Steam-like structure detected: {isSteamLike}");
+
+                if (isSteamLike)
+                {
+                    logEntries?.Add($"🎮 CONFIRMED Steam-like game: {game.Name} at {game.InstallDirectory}");
+
+                    // Check Profile/VALVE/Stats directory for .Bin files
+                    var valveStatsPath = Path.Combine(profilePath, "VALVE", "Stats");
+                    logEntries?.Add($"   Checking VALVE/Stats path: {valveStatsPath}");
+                    logEntries?.Add($"   VALVE/Stats directory exists: {Directory.Exists(valveStatsPath)}");
+                    
+                    if (Directory.Exists(valveStatsPath))
+                    {
+                        var achievementFiles = Directory.GetFiles(valveStatsPath, "*.Bin", SearchOption.TopDirectoryOnly);
+                        logEntries?.Add($"🏆 Found {achievementFiles.Length} .Bin achievement files for {game.Name}");
+
+                        foreach (var achievementFile in achievementFiles)
+                        {
+                            var fileInfo = new FileInfo(achievementFile);
+                            logEntries?.Add($"   📁 Processing file: {Path.GetFileName(achievementFile)} ({fileInfo.Length} bytes, {fileInfo.LastWriteTime:yyyy-MM-dd HH:mm})");
+                            
+                            var parsedAchievements = ParseSteamBinFile(achievementFile, logEntries);
+                            achievements.AddRange(parsedAchievements);
+                            logEntries?.Add($"   ✅ Parsed {parsedAchievements.Count} achievements from {Path.GetFileName(achievementFile)}");
+                        }
+
+                        // Also check for stats files
+                        var statsFiles = Directory.GetFiles(valveStatsPath, "*stats*.Bin", SearchOption.TopDirectoryOnly);
+                        logEntries?.Add($"   Found {statsFiles.Length} stats .Bin files");
+                        foreach (var statsFile in statsFiles)
+                        {
+                            var parsedStats = ParseSteamStatsBinFile(statsFile);
+                            stats.AddRange(parsedStats);
+                        }
+                    }
+                    else
+                    {
+                        logEntries?.Add($"   ❌ VALVE/Stats directory not found: {valveStatsPath}");
+                    }
+                }
+                else
+                {
+                    logEntries?.Add($"   ❌ NOT a Steam-like game: {game.Name}");
+                }
+            }
+            catch (Exception ex)
+            {
+                logEntries?.Add($"💥 ERROR checking Steam-like game {game.Name}: {ex.Message}");
+                logEntries?.Add($"   Stack trace: {ex.StackTrace}");
+            }
+
+            logEntries?.Add($"🎯 FINAL Steam-like results for {game.Name}: {achievements.Count} achievements, {stats.Count} stats");
+            return new SteamEmulatorData { Achievements = achievements, Stats = stats };
+        }        /// <summary>
+        /// Parses a Steam .Bin achievement file in INI format
+        /// </summary>
+        private List<Achievements> ParseSteamBinFile(string filePath, List<string> logEntries = null)
+        {
+            List<Achievements> achievements = new List<Achievements>();
+
+            try
+            {
+                logEntries?.Add($"📖 PARSING Steam .Bin file: {filePath}");
+                
+                if (!File.Exists(filePath))
+                {
+                    logEntries?.Add($"   ❌ File does not exist: {filePath}");
+                    return achievements;
+                }
+                
+                string[] lines = File.ReadAllLines(filePath);
+                logEntries?.Add($"   📄 File contains {lines.Length} lines");
+
+                // Debug: Show first 10 lines of the file
+                logEntries?.Add($"   📝 First 10 lines of file:");
+                for (int i = 0; i < Math.Min(10, lines.Length); i++)
+                {
+                    logEntries?.Add($"     {i + 1:D2}: '{lines[i]}'");
+                }
+
+                string currentAchievementId = null;
+                bool hasAchieved = false;
+                DateTime? achievedTime = null;
+                int achievementCount = 0;
+
+                foreach (string line in lines)
+                {
+                    string trimmedLine = line.Trim();
+
+                    // Parse achievement section header like [ACHIEVEMENT_20]
+                    if (trimmedLine.StartsWith("[") && trimmedLine.EndsWith("]") && trimmedLine.Contains("ACHIEVEMENT_"))
+                    {
+                        // Save previous achievement if we have one
+                        if (!string.IsNullOrEmpty(currentAchievementId))
+                        {
+                            achievements.Add(new Achievements
+                            {
+                                ApiName = currentAchievementId,
+                                Name = string.Empty, // Will be filled by Steam API
+                                Description = string.Empty, // Will be filled by Steam API
+                                UrlUnlocked = string.Empty,
+                                UrlLocked = string.Empty,
+                                DateUnlocked = hasAchieved ? achievedTime : null,
+                                NoRarety = false
+                            });
+                            
+                            logEntries?.Add($"   🏆 Added achievement: {currentAchievementId} (Unlocked: {hasAchieved}, Time: {achievedTime})");
+                            achievementCount++;
+                        }
+
+                        // Start new achievement
+                        currentAchievementId = trimmedLine.Substring(1, trimmedLine.Length - 2); // Remove [ and ]
+                        hasAchieved = false;
+                        achievedTime = null;
+                        logEntries?.Add($"   🆕 Starting new achievement section: {currentAchievementId}");
+                    }
+                    // Parse achievement data
+                    else if (trimmedLine.Contains("="))
+                    {
+                        var parts = trimmedLine.Split('=');
+                        if (parts.Length == 2)
+                        {
+                            string key = parts[0].Trim();
+                            string value = parts[1].Trim();
+
+                            logEntries?.Add($"     📊 Key-Value: {key} = {value}");
+
+                            if (key.Equals("HaveAchieved", StringComparison.OrdinalIgnoreCase))
+                            {
+                                hasAchieved = value.Equals("1");
+                                logEntries?.Add($"     ✅ Achievement status: {hasAchieved}");
+                            }
+                            else if (key.Equals("HaveAchievedTime", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (long.TryParse(value, out long unixTime) && unixTime > 0)
+                                {
+                                    achievedTime = new DateTime(1970, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                                        .AddSeconds(unixTime)
+                                        .ToLocalTime();
+                                    logEntries?.Add($"     🕐 Achievement time: {achievedTime}");
+                                }
+                                else
+                                {
+                                    logEntries?.Add($"     🕐 No valid achievement time (value: {value})");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Don't forget the last achievement
+                if (!string.IsNullOrEmpty(currentAchievementId))
+                {
+                    achievements.Add(new Achievements
+                    {
+                        ApiName = currentAchievementId,
+                        Name = string.Empty,
+                        Description = string.Empty,
+                        UrlUnlocked = string.Empty,
+                        UrlLocked = string.Empty,
+                        DateUnlocked = hasAchieved ? achievedTime : null,
+                        NoRarety = false
+                    });
+                    
+                    logEntries?.Add($"   🏆 Added final achievement: {currentAchievementId} (Unlocked: {hasAchieved}, Time: {achievedTime})");
+                    achievementCount++;
+                }
+
+                logEntries?.Add($"🎯 PARSING COMPLETE: Successfully parsed {achievements.Count} achievements from {Path.GetFileName(filePath)}");
+                
+                if (achievements.Count > 0)
+                {
+                    logEntries?.Add($"   📋 Achievement summary:");
+                    foreach (var ach in achievements.Take(5))
+                    {
+                        logEntries?.Add($"     - {ach.ApiName}: {(ach.DateUnlocked.HasValue ? "UNLOCKED" : "LOCKED")}");
+                    }
+                    if (achievements.Count > 5)
+                    {
+                        logEntries?.Add($"     ... and {achievements.Count - 5} more achievements");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                logEntries?.Add($"💥 ERROR parsing Steam .Bin file {filePath}: {ex.Message}");
+                logEntries?.Add($"   Stack trace: {ex.StackTrace}");
+            }
+
+            return achievements;
+        }
+
+        /// <summary>
+        /// Parses Steam stats from .Bin files (if needed)
+        /// </summary>
+        private List<GameStats> ParseSteamStatsBinFile(string filePath)
+        {
+            List<GameStats> stats = new List<GameStats>();
+
+            try
+            {
+                // For now, we'll focus on achievements, but this can be extended
+                // to parse game statistics if they're in a similar format
+                Logger.Info($"Stats parsing not yet implemented for: {filePath}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, $"Error parsing Steam stats file {filePath}: {ex.Message}");
+            }
+
+            return stats;
+        }
+        #endregion
         #endregion
     }
 
