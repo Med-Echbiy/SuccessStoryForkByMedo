@@ -20,7 +20,6 @@ using System.Collections.ObjectModel;
 using CommonPluginsStores.Models;
 using CommonPluginsStores.Steam.Models.SteamKit;
 using System.Dynamic;
-using Newtonsoft.Json.Linq;
 namespace SuccessStory.Clients
 {
     class SteamEmulators : GenericAchievements
@@ -697,9 +696,15 @@ namespace SuccessStory.Clients
                         {
                             logEntries?.Add($"   ... and {steamLikeData.Achievements.Count - 5} more achievements");
                         }
-                        
-                        ReturnAchievements.AddRange(steamLikeData.Achievements);
+                          ReturnAchievements.AddRange(steamLikeData.Achievements);
                         ReturnStats.AddRange(steamLikeData.Stats);
+                          // Return early since we found Steam-like achievements - no need to check other emulator paths
+                        logEntries?.Add($"🎯 SUCCESS: Steam-like detection complete for {game.Name} - returning {steamLikeData.Achievements.Count} achievements");
+                        return new SteamEmulatorData
+                        {
+                            Achievements = ReturnAchievements,
+                            Stats = ReturnStats
+                        };
                     }
                     else
                     {
@@ -858,16 +863,27 @@ namespace SuccessStory.Clients
                             if (File.Exists(Environment.ExpandEnvironmentVariables(DirAchivements) + $"\\{AppId}\\achievements.json"))
                             {
                                 string Name = string.Empty;
-                                DateTime? DateUnlocked = null;
-
-                                string jsonText = File.ReadAllText(Environment.ExpandEnvironmentVariables(DirAchivements) + $"\\{AppId}\\achievements.json");                                 foreach (dynamic achievement in Serialization.FromJson<dynamic>(jsonText))
+                                DateTime? DateUnlocked = null;                                string jsonText = File.ReadAllText(Environment.ExpandEnvironmentVariables(DirAchivements) + $"\\{AppId}\\achievements.json");                                 foreach (dynamic achievement in Serialization.FromJson<dynamic>(jsonText))
                                 {
                                     // eFMann - added an exclusion to remove [''] from APIName for games like Forza Horizon 4
-                                    // Fixed: Handle JObject instead of DynamicObject
+                                    // Fixed: Handle dynamic JSON objects properly
                                     Name = achievement.Name?.ToString();
-                                    if (string.IsNullOrEmpty(Name) && achievement is Newtonsoft.Json.Linq.JObject jObj)
+                                    if (string.IsNullOrEmpty(Name))
                                     {
-                                        Name = jObj.Properties().FirstOrDefault()?.Name ?? string.Empty;
+                                        // Try to get the first property name from the dynamic object
+                                        try
+                                        {
+                                            var obj = achievement as IDictionary<string, object>;
+                                            if (obj?.Keys?.Count > 0)
+                                            {
+                                                Name = obj.Keys.First();
+                                            }
+                                        }
+                                        catch
+                                        {
+                                            // Fallback - if dynamic object iteration fails, just skip this achievement
+                                            continue;
+                                        }
                                     }
 
 
@@ -909,11 +925,24 @@ namespace SuccessStory.Clients
                                 foreach (dynamic achievement in Serialization.FromJson<dynamic>(jsonText))
                                 {
                                     // eFMann - added an exclusion to remove [''] from APIName for games like Forza Horizon 4
-                                    // Fixed: Handle JObject instead of DynamicObject
+                                    // Fixed: Handle dynamic JSON objects properly
                                     Name = achievement.Name?.ToString();
-                                    if (string.IsNullOrEmpty(Name) && achievement is Newtonsoft.Json.Linq.JObject jObj)
+                                    if (string.IsNullOrEmpty(Name))
                                     {
-                                        Name = jObj.Properties().FirstOrDefault()?.Name ?? string.Empty;
+                                        // Try to get the first property name from the dynamic object
+                                        try
+                                        {
+                                            var obj = achievement as IDictionary<string, object>;
+                                            if (obj?.Keys?.Count > 0)
+                                            {
+                                                Name = obj.Keys.First();
+                                            }
+                                        }
+                                        catch
+                                        {
+                                            // Fallback - if dynamic object iteration fails, just skip this achievement
+                                            continue;
+                                        }
                                     }
 
                                     dynamic elements = achievement.First;
@@ -980,56 +1009,99 @@ namespace SuccessStory.Clients
                                 if (stats.Count != header)
                                 {
                                     Common.LogError(new Exception("Invalid File"), false, "Invalid File", true, PluginDatabase.PluginName);
-                                }
-                                string language = CodeLang.GetSteamLang(API.Instance.ApplicationSettings.Language);
+                                }                                string language = CodeLang.GetSteamLang(API.Instance.ApplicationSettings.Language);
                                 string site = string.Format(@"https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/?key={0}&appid={1}&l={2}", apiKey, AppId, language);
+                                
+                                logEntries?.Add($"🌐 ATTEMPTING Steam API call for app {AppId}:");
+                                logEntries?.Add($"   API URL: {site}");
+                                logEntries?.Add($"   Language: {language}");
+                                logEntries?.Add($"   API Key provided: {!string.IsNullOrEmpty(apiKey)}");
 
                                 string Results = string.Empty;
                                 try
                                 {
+                                    logEntries?.Add($"📡 Making Steam API request...");
                                     Results = Web.DownloadStringData(site).GetAwaiter().GetResult();
+                                    logEntries?.Add($"✅ Steam API response received: {Results?.Length ?? 0} characters");
+                                    
+                                    if (!string.IsNullOrEmpty(Results))
+                                    {
+                                        // Log first 500 characters of response for debugging
+                                        string preview = Results.Length > 500 ? Results.Substring(0, 500) + "..." : Results;
+                                        logEntries?.Add($"📄 Steam API response preview: {preview}");
+                                    }
                                 }
                                 catch (WebException ex)
                                 {
+                                    logEntries?.Add($"💥 Steam API WebException: {ex.Message}");
                                     if (ex.Status == WebExceptionStatus.ProtocolError && ex.Response != null)
                                     {
                                         var resp = (HttpWebResponse)ex.Response;
+                                        logEntries?.Add($"   HTTP Status: {resp.StatusCode} ({(int)resp.StatusCode})");
                                         switch (resp.StatusCode)
                                         {
                                             case HttpStatusCode.BadRequest: // HTTP 400
+                                                logEntries?.Add($"   Bad Request - likely invalid App ID or API key");
                                                 break;
                                             case HttpStatusCode.ServiceUnavailable: // HTTP 503
+                                                logEntries?.Add($"   Service Unavailable - Steam API may be down");
                                                 break;
                                             default:
+                                                logEntries?.Add($"   Unexpected HTTP error");
                                                 Common.LogError(ex, false, $"Failed to load from {site}", true, PluginDatabase.PluginName);
                                                 break;
                                         }
                                     }
                                 }
-
-                                if (Results != string.Empty && Results.Length > 50)
+                                catch (Exception ex)
                                 {
+                                    logEntries?.Add($"💥 Steam API General Exception: {ex.Message}");
+                                }                                if (Results != string.Empty && Results.Length > 50)
+                                {
+                                    logEntries?.Add($"🔍 PARSING Steam API response...");
                                     dynamic resultObj = Serialization.FromJson<dynamic>(Results);
                                     dynamic resultItems = null;
                                     try
                                     {
+                                        logEntries?.Add($"   Attempting to access game.availableGameStats.achievements...");
                                         resultItems = resultObj["game"]?["availableGameStats"]?["achievements"];
-                                        for (int i = 0; i < resultItems?.Count; i++)
+                                        
+                                        if (resultItems != null)                                        {
+                                            logEntries?.Add($"✅ Steam API achievements found: {resultItems.Count} total achievements available");
+                                            
+                                            for (int i = 0; i < resultItems?.Count; i++)
+                                            {
+                                                string achname = resultItems[i]["name"];
+                                                logEntries?.Add($"   📋 Steam achievement {i + 1}: {achname}");
+                                                
+                                                byte[] bn = Encoding.ASCII.GetBytes(achname);
+                                                string hash = string.Empty;
+                                                foreach (byte b in crc.ComputeHash(bn)) hash += b.ToString("x2").ToUpper();
+                                                hash = Hyphenate(hash, 2);
+                                                achnames.Add(hash, achname);
+                                                logEntries?.Add($"   🔗 Mapped hash {hash} → {achname}");
+                                            }
+                                            
+                                            logEntries?.Add($"🎯 Steam schema loaded: {achnames.Count} achievement names mapped");
+                                        }
+                                        else
                                         {
-                                            string achname = resultItems[i]["name"];
-                                            byte[] bn = Encoding.ASCII.GetBytes(achname);
-                                            string hash = string.Empty;
-                                            foreach (byte b in crc.ComputeHash(bn)) hash += b.ToString("x2").ToUpper();
-                                            hash = Hyphenate(hash, 2);
-                                            achnames.Add(hash, achname);
+                                            logEntries?.Add($"❌ No achievements found in Steam API response");
                                         }
                                     }
-                                    catch
+                                    catch (Exception parseEx)
                                     {
+                                        logEntries?.Add($"💥 Error parsing Steam API response: {parseEx.Message}");
                                         Common.LogError(new Exception("Error getting achievement names"), false, "Error getting achievement names", true, PluginDatabase.PluginName);
                                     }
                                 }
-
+                                else
+                                {
+                                    logEntries?.Add($"❌ Steam API response invalid or empty (length: {Results?.Length ?? 0})");
+                                }                                logEntries?.Add($"🔍 MATCHING Steam achievements with parsed achievements...");
+                                logEntries?.Add($"   Total achievement hashes available: {achnames.Count}");
+                                logEntries?.Add($"   Total local achievements to match: {stats.Count}");
+                                
                                 for (int i = 0; i < stats.Count; i++)
                                 {
                                     try
@@ -1038,12 +1110,16 @@ namespace SuccessStory.Clients
                                         Array.Reverse(namebyte);
                                         Buffer.BlockCopy(stats[i], 8, datebyte, 0, 4);
                                         Name = BitConverter.ToString(namebyte);
+                                        
+                                        logEntries?.Add($"   🔗 Looking for hash: {Name}");
 
                                         if (achnames.ContainsKey(Name))
                                         {
                                             Name = achnames[Name];
                                             int Date = BitConverter.ToInt32(datebyte, 0);
                                             DateUnlocked = new DateTime(1970, 1, 1, 0, 0, 0, 0).AddSeconds(Date).ToLocalTime();
+                                            logEntries?.Add($"   ✅ MATCH FOUND: {Name} (Date: {DateUnlocked})");
+                                            
                                             if (Name != string.Empty && DateUnlocked != null)
                                             {
                                                 ReturnAchievements.Add(new Achievements
@@ -1056,17 +1132,20 @@ namespace SuccessStory.Clients
                                                     DateUnlocked = DateUnlocked,
                                                     NoRarety = false
                                                 });
+                                                logEntries?.Add($"   🏆 Added matched achievement: {Name}");
                                             }
                                             Name = string.Empty;
                                             DateUnlocked = null;
                                         }
                                         else
                                         {
+                                            logEntries?.Add($"   ❌ NO MATCH for hash: {Name}");
                                             Common.LogDebug(true, $"No matches found for crc in stats.bin.");
                                         }
                                     }
-                                    catch
+                                    catch (Exception ex)
                                     {
+                                        logEntries?.Add($"💥 Error processing achievement {i}: {ex.Message}");
                                         Common.LogError(new Exception("Stats.bin file format incorrect for SSE"), false, "Stats.bin file format incorrect for SSE", true, PluginDatabase.PluginName);
                                     }
 
@@ -1216,16 +1295,27 @@ namespace SuccessStory.Clients
                                 if (File.Exists(DirAchivements + $"\\{AppId}\\remote\\{AppId}\\achievements.json"))
                                 {
                                     string Name = string.Empty;
-                                    DateTime? DateUnlocked = null;
-
-                                    string jsonText = File.ReadAllText(DirAchivements + $"\\{AppId}\\remote\\{AppId}\\achievements.json");                                    foreach (dynamic achievement in Serialization.FromJson<dynamic>(jsonText))
+                                    DateTime? DateUnlocked = null;                                    string jsonText = File.ReadAllText(DirAchivements + $"\\{AppId}\\remote\\{AppId}\\achievements.json");                                    foreach (dynamic achievement in Serialization.FromJson<dynamic>(jsonText))
                                     {
                                         // eFMann - added an exclusion to remove [''] from APIName for games like Forza Horizon 4
-                                        // Fixed: Handle JObject instead of DynamicObject
+                                        // Fixed: Handle dynamic JSON objects properly
                                         Name = achievement.Name?.ToString();
-                                        if (string.IsNullOrEmpty(Name) && achievement is Newtonsoft.Json.Linq.JObject jObj)
+                                        if (string.IsNullOrEmpty(Name))
                                         {
-                                            Name = jObj.Properties().FirstOrDefault()?.Name ?? string.Empty;
+                                            // Try to get the first property name from the dynamic object
+                                            try
+                                            {
+                                                var obj = achievement as IDictionary<string, object>;
+                                                if (obj?.Keys?.Count > 0)
+                                                {
+                                                    Name = obj.Keys.First();
+                                                }
+                                            }
+                                            catch
+                                            {
+                                                // Fallback - if dynamic object iteration fails, just skip this achievement
+                                                continue;
+                                            }
                                         }
 
                                         dynamic elements = achievement.First;
@@ -1629,9 +1719,7 @@ namespace SuccessStory.Clients
                     if (Directory.Exists(valveStatsPath))
                     {
                         var achievementFiles = Directory.GetFiles(valveStatsPath, "*.Bin", SearchOption.TopDirectoryOnly);
-                        logEntries?.Add($"🏆 Found {achievementFiles.Length} .Bin achievement files for {game.Name}");
-
-                        foreach (var achievementFile in achievementFiles)
+                        logEntries?.Add($"🏆 Found {achievementFiles.Length} .Bin achievement files for {game.Name}");                        foreach (var achievementFile in achievementFiles)
                         {
                             var fileInfo = new FileInfo(achievementFile);
                             logEntries?.Add($"   📁 Processing file: {Path.GetFileName(achievementFile)} ({fileInfo.Length} bytes, {fileInfo.LastWriteTime:yyyy-MM-dd HH:mm})");
@@ -1640,6 +1728,10 @@ namespace SuccessStory.Clients
                             achievements.AddRange(parsedAchievements);
                             logEntries?.Add($"   ✅ Parsed {parsedAchievements.Count} achievements from {Path.GetFileName(achievementFile)}");
                         }
+                        
+                        // Now integrate with Steam API to get full achievement schema
+                        logEntries?.Add($"🔗 INTEGRATING with Steam API for complete achievement data...");
+                        IntegrateSteamApiSchemaForSteamLike(achievements, AppId, logEntries);
 
                         // Also check for stats files
                         var statsFiles = Directory.GetFiles(valveStatsPath, "*stats*.Bin", SearchOption.TopDirectoryOnly);
@@ -1702,10 +1794,8 @@ namespace SuccessStory.Clients
 
                 foreach (string line in lines)
                 {
-                    string trimmedLine = line.Trim();
-
-                    // Parse achievement section header like [ACHIEVEMENT_20]
-                    if (trimmedLine.StartsWith("[") && trimmedLine.EndsWith("]") && trimmedLine.Contains("ACHIEVEMENT_"))
+                    string trimmedLine = line.Trim();                    // Parse achievement section header like [ACHIEVEMENT_20] or [LOP_121]
+                    if (trimmedLine.StartsWith("[") && trimmedLine.EndsWith("]"))
                     {
                         // Save previous achievement if we have one
                         if (!string.IsNullOrEmpty(currentAchievementId))
@@ -1823,9 +1913,92 @@ namespace SuccessStory.Clients
             catch (Exception ex)
             {
                 Logger.Error(ex, $"Error parsing Steam stats file {filePath}: {ex.Message}");
-            }
+            }            return stats;
+        }
 
-            return stats;
+        /// <summary>
+        /// Integrates Steam-like achievements with Steam API schema
+        /// </summary>
+        private void IntegrateSteamApiSchemaForSteamLike(List<Achievements> localAchievements, uint appId, List<string> logEntries = null)
+        {
+            try
+            {
+                logEntries?.Add($"🔗 INTEGRATING Steam API schema for {localAchievements.Count} Steam-like achievements");
+                
+                if (appId == 0)
+                {
+                    logEntries?.Add($"⚠️  No App ID - cannot fetch Steam schema");
+                    return;
+                }
+                
+                // Get Steam API key
+                string apiKey = SuccessStory.SteamApi?.CurrentAccountInfos?.ApiKey;
+                if (string.IsNullOrEmpty(apiKey))
+                {
+                    logEntries?.Add($"⚠️  No Steam API key - achievements will show without names/descriptions");
+                    return;
+                }
+                
+                // Fetch Steam achievement schema
+                string language = CodeLang.GetSteamLang(API.Instance.ApplicationSettings.Language);
+                string url = string.Format(@"https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/?key={0}&appid={1}&l={2}", apiKey, appId, language);
+                
+                logEntries?.Add($"🌐 Fetching Steam schema from API...");
+                
+                string response = Web.DownloadStringData(url).GetAwaiter().GetResult();
+                if (string.IsNullOrEmpty(response) || response.Length < 50)
+                {
+                    logEntries?.Add($"❌ Invalid Steam schema response");
+                    return;
+                }
+                
+                // Parse schema and create complete achievement list
+                dynamic resultObj = Serialization.FromJson<dynamic>(response);
+                dynamic schemaAchievements = resultObj["game"]?["availableGameStats"]?["achievements"];
+                
+                if (schemaAchievements != null)
+                {
+                    logEntries?.Add($"📋 Steam schema contains {schemaAchievements.Count} total achievements");
+                    
+                    var schemaMap = new Dictionary<string, dynamic>();
+                    for (int i = 0; i < schemaAchievements.Count; i++)
+                    {
+                        string apiName = schemaAchievements[i]["name"];
+                        schemaMap[apiName] = schemaAchievements[i];
+                    }
+                    
+                    // Create complete achievement list
+                    var completedAchievements = new List<Achievements>();
+                    foreach (var schemaEntry in schemaMap)
+                    {
+                        string apiName = schemaEntry.Key;
+                        var schemaData = schemaEntry.Value;
+                        var localAchievement = localAchievements.FirstOrDefault(a => a.ApiName == apiName);
+                        
+                        completedAchievements.Add(new Achievements
+                        {
+                            ApiName = apiName,
+                            Name = schemaData["displayName"]?.ToString() ?? apiName,
+                            Description = schemaData["description"]?.ToString() ?? "",
+                            UrlUnlocked = schemaData["icon"]?.ToString() ?? "",
+                            UrlLocked = schemaData["icongray"]?.ToString() ?? "",
+                            DateUnlocked = localAchievement?.DateUnlocked,
+                            NoRarety = false
+                        });
+                    }
+                    
+                    // Replace local achievements with complete set
+                    localAchievements.Clear();
+                    localAchievements.AddRange(completedAchievements);
+                    
+                    int unlockedCount = localAchievements.Count(a => a.DateUnlocked.HasValue);
+                    logEntries?.Add($"🎯 Integration complete: {localAchievements.Count} total ({unlockedCount} unlocked)");
+                }
+            }
+            catch (Exception ex)
+            {
+                logEntries?.Add($"💥 Error integrating Steam schema: {ex.Message}");
+            }
         }
         #endregion
         #endregion

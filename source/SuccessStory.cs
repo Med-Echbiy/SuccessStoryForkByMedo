@@ -671,9 +671,7 @@ namespace SuccessStory
                     $"  Unlock Count Changed: {(beforeRefresh?.Unlocked ?? 0) != (afterRefresh?.Unlocked ?? 0)}",
                     "",
                     "DETAILED CHANGES:"
-                };
-
-                if ((beforeRefresh?.Total ?? 0) != (afterRefresh?.Total ?? 0))
+                };                if ((beforeRefresh?.Total ?? 0) != (afterRefresh?.Total ?? 0))
                 {
                     resultEntries.Add($"  Total Achievements: {beforeRefresh?.Total ?? 0} → {afterRefresh?.Total ?? 0}");
                 }
@@ -681,7 +679,9 @@ namespace SuccessStory
                 if ((beforeRefresh?.Unlocked ?? 0) != (afterRefresh?.Unlocked ?? 0))
                 {
                     resultEntries.Add($"  Unlocked Achievements: {beforeRefresh?.Unlocked ?? 0} → {afterRefresh?.Unlocked ?? 0}");
-                }                if (afterRefresh?.HasData == true && afterRefresh.Items?.Count > 0)
+                }
+
+                if (afterRefresh?.HasData == true && afterRefresh.Items?.Count > 0)
                 {
                     resultEntries.Add("");
                     resultEntries.Add("FOUND ACHIEVEMENTS:");
@@ -695,7 +695,9 @@ namespace SuccessStory
                     if (afterRefresh.Items.Count > 10)
                     {
                         resultEntries.Add($"  ... and {afterRefresh.Items.Count - 10} more achievements");
-                    }                      // For local achievements, try to identify where they were likely found
+                    }
+
+                    // For local achievements, try to identify where they were likely found
                     SuccessStoryDatabase.AchievementSource source = SuccessStoryDatabase.GetAchievementSource(pluginSettings.Settings, game);
                     if (source == SuccessStoryDatabase.AchievementSource.Local && !string.IsNullOrEmpty(game.InstallDirectory))
                     {
@@ -705,7 +707,7 @@ namespace SuccessStory
                         try
                         {
                             var possibleSources = new List<string>();
-                            
+
                             // Check for Steam-like files first
                             var valveIniPath = Path.Combine(game.InstallDirectory, "valve.ini");
                             var profilePath = Path.Combine(game.InstallDirectory, "Profile");
