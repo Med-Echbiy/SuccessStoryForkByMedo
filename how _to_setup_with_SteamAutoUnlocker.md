@@ -24,7 +24,7 @@ If your cracked game does not show achievements, follow these steps:
      ```
    - **Reference Screenshot Example:**
      - For a visual guide, see the `setupExLiesOfP.png` image in the `screenshots` folder. This shows the correct folder structure and placement of `valve.ini` and `Profile` for Lies of P.
-     - ![Setup Lies of P Example](screenshots/setupExLiesOfP.png)
+     - ![Setup Lies of P Example](./screenshots/setupExLiesOfP.png)
 
 4. **Add Game to Playnite**
 
