@@ -47,7 +47,218 @@ namespace SuccessStory.Clients
 
         private string Hyphenate(string str, int pos) => string.Join("-", Regex.Split(str, @"(?<=\G.{" + pos + "})(?!$)"));
 
-        
+        /// <summary>
+        /// Validates if a DateTime is a valid unlock date (not default/minimum value)
+        /// Valid dates indicate the achievement is actually unlocked
+        /// Invalid dates (like 0001-01-01) indicate the achievement is locked/not unlocked
+        /// </summary>
+        private bool IsValidUnlockDate(DateTime? dateTime)
+        {
+            if (!dateTime.HasValue)
+                return false;
+                
+            // Check for common invalid dates that indicate "not unlocked"
+            var date = dateTime.Value;
+            return date != DateTime.MinValue && 
+                   date != default(DateTime) && 
+                   date.Year > 1970 && 
+                   date.Year <= DateTime.Now.Year + 1;
+        }
+
+        /// <summary>
+        /// Deduplicates achievements list, prioritizing better unlock information and removing true duplicates
+        /// Does NOT filter out locked achievements - they should be preserved
+        /// </summary>
+        private List<Achievements> DeduplicateAchievements(List<Achievements> achievements, List<string> logEntries = null)
+        {
+            if (achievements == null || achievements.Count == 0)
+                return achievements;
+
+            logEntries?.Add($"🔧 STARTING deduplication process with {achievements.Count} achievements");
+
+            var achievementMap = new Dictionary<string, Achievements>(StringComparer.OrdinalIgnoreCase);
+            int duplicatesRemoved = 0;
+
+            foreach (var achievement in achievements)
+            {
+                if (string.IsNullOrEmpty(achievement.ApiName))
+                    continue;
+
+                string key = achievement.ApiName.ToLowerInvariant();
+                
+                if (!achievementMap.ContainsKey(key))
+                {
+                    // First occurrence - always add (both locked and unlocked achievements)
+                    achievementMap[key] = achievement;
+                }
+                else
+                {
+                    // Duplicate found - decide which to keep
+                    var existing = achievementMap[key];
+                    bool existingIsUnlocked = IsValidUnlockDate(existing.DateUnlocked);
+                    bool newIsUnlocked = IsValidUnlockDate(achievement.DateUnlocked);
+
+                    // Priority logic:
+                    // 1. Unlocked achievement over locked achievement
+                    // 2. Better metadata (name, description)
+                    // 3. More recent unlock date if both are unlocked
+                    bool shouldReplace = false;
+
+                    if (!existingIsUnlocked && newIsUnlocked)
+                    {
+                        shouldReplace = true;
+                        logEntries?.Add($"   🔄 Replacing {achievement.ApiName}: locked → unlocked ({achievement.DateUnlocked})");
+                    }
+                    else if (existingIsUnlocked && !newIsUnlocked)
+                    {
+                        shouldReplace = false;
+                        logEntries?.Add($"   ⚠️  Keeping {achievement.ApiName}: already unlocked ({existing.DateUnlocked})");
+                    }
+                    else if (existingIsUnlocked && newIsUnlocked)
+                    {
+                        // Both unlocked - keep the more recent one or better metadata
+                        if (achievement.DateUnlocked > existing.DateUnlocked)
+                        {
+                            shouldReplace = true;
+                            logEntries?.Add($"   🔄 Replacing {achievement.ApiName}: newer unlock date ({achievement.DateUnlocked} > {existing.DateUnlocked})");
+                        }
+                        else
+                        {
+                            logEntries?.Add($"   ⚠️  Keeping {achievement.ApiName}: older/same unlock date");
+                        }
+                    }
+                    else
+                    {
+                        // Both locked - update metadata if better
+                        if (!string.IsNullOrEmpty(achievement.Name) && string.IsNullOrEmpty(existing.Name))
+                        {
+                            existing.Name = achievement.Name;
+                            existing.Description = achievement.Description;
+                            if (!string.IsNullOrEmpty(achievement.UrlUnlocked))
+                                existing.UrlUnlocked = achievement.UrlUnlocked;
+                            if (!string.IsNullOrEmpty(achievement.UrlLocked))
+                                existing.UrlLocked = achievement.UrlLocked;
+                            
+                            logEntries?.Add($"   📝 Updated metadata for locked {achievement.ApiName}");
+                        }
+                    }
+
+                    // Update metadata regardless of replacement decision
+                    if (!shouldReplace && !string.IsNullOrEmpty(achievement.Name) && string.IsNullOrEmpty(existing.Name))
+                    {
+                        existing.Name = achievement.Name;
+                        existing.Description = achievement.Description;
+                        if (!string.IsNullOrEmpty(achievement.UrlUnlocked))
+                            existing.UrlUnlocked = achievement.UrlUnlocked;
+                        if (!string.IsNullOrEmpty(achievement.UrlLocked))
+                            existing.UrlLocked = achievement.UrlLocked;
+                    }
+
+                    if (shouldReplace)
+                    {
+                        achievementMap[key] = achievement;
+                    }
+
+                    duplicatesRemoved++;
+                }
+            }
+
+            var result = achievementMap.Values.ToList();
+            
+            logEntries?.Add($"🎯 Deduplication COMPLETE:");
+            logEntries?.Add($"   Original count: {achievements.Count}");
+            logEntries?.Add($"   Duplicates removed: {duplicatesRemoved}");
+            logEntries?.Add($"   Final count: {result.Count}");
+            logEntries?.Add($"   Unlocked achievements: {result.Count(a => IsValidUnlockDate(a.DateUnlocked))}");
+            logEntries?.Add($"   Locked achievements: {result.Count(a => !IsValidUnlockDate(a.DateUnlocked))}");
+
+            return result;
+        }
+
+        /// <summary>
+        /// Logs all achievements found for debugging the smart merging feature
+        /// </summary>
+        private void LogAllAchievementsFound(Game game, List<Achievements> achievements, string source)
+        {
+            try
+            {
+                // Use the same directory structure as existing logs
+                string logPath = Path.Combine(SuccessStory.PluginDatabase.Paths.PluginUserDataPath, "RefreshActionLogs");
+                Directory.CreateDirectory(logPath);
+                
+                // Enhanced filename with game name and app ID
+                string safeGameName = string.Join("_", game.Name.Split(Path.GetInvalidFileNameChars())).Trim('_');
+                if (safeGameName.Length > 40)
+                {
+                    safeGameName = safeGameName.Substring(0, 40).TrimEnd('_');
+                }
+                
+                string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+                string achievementLogFileName = $"AllAchievements_{safeGameName}_AppID{this.AppId}_{timestamp}.log";
+                string fullLogPath = Path.Combine(logPath, achievementLogFileName);
+                
+                using (var writer = new StreamWriter(fullLogPath, false, System.Text.Encoding.UTF8))
+                {
+                    writer.WriteLine("=".PadRight(80, '='));
+                    writer.WriteLine($"ALL ACHIEVEMENTS DEBUG LOG - {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+                    writer.WriteLine("=".PadRight(80, '='));
+                    writer.WriteLine($"Game Name: {game.Name}");
+                    writer.WriteLine($"Game ID: {game.Id}");
+                    writer.WriteLine($"Steam App ID: {this.AppId}");
+                    writer.WriteLine($"Source: {source}");
+                    writer.WriteLine($"Total Achievements Found: {achievements.Count}");
+                    writer.WriteLine();
+                    
+                    if (achievements.Count > 0)
+                    {
+                        writer.WriteLine("ACHIEVEMENTS LIST:");
+                        writer.WriteLine("-".PadRight(80, '-'));
+                        
+                        for (int i = 0; i < achievements.Count; i++)
+                        {
+                            var ach = achievements[i];
+                            bool isUnlocked = IsValidUnlockDate(ach.DateUnlocked);
+                            string status = isUnlocked ? "UNLOCKED" : "LOCKED";
+                            string unlockDate = ach.DateUnlocked?.ToString("yyyy-MM-dd HH:mm:ss") ?? "N/A";
+                            
+                            writer.WriteLine($"{i + 1:D3}. {ach.ApiName}");
+                            writer.WriteLine($"     Status: {status}");
+                            writer.WriteLine($"     Unlock Date: {unlockDate}");
+                            if (!isUnlocked && ach.DateUnlocked.HasValue)
+                                writer.WriteLine($"     📝 Note: Invalid date indicates achievement is locked");
+                            if (!string.IsNullOrEmpty(ach.Name))
+                                writer.WriteLine($"     Display Name: {ach.Name}");
+                            if (!string.IsNullOrEmpty(ach.Description))
+                                writer.WriteLine($"     Description: {ach.Description}");
+                            writer.WriteLine();
+                        }
+                        
+                        // Add summary statistics
+                        var unlocked = achievements.Count(a => IsValidUnlockDate(a.DateUnlocked));
+                        var locked = achievements.Count(a => !IsValidUnlockDate(a.DateUnlocked));
+                        
+                        writer.WriteLine();
+                        writer.WriteLine("SUMMARY STATISTICS:");
+                        writer.WriteLine("-".PadRight(40, '-'));
+                        writer.WriteLine($"Unlocked: {unlocked}");
+                        writer.WriteLine($"Locked: {locked}");
+                        writer.WriteLine($"Total: {achievements.Count}");
+                    }
+                    else
+                    {
+                        writer.WriteLine("No achievements found.");
+                    }
+                    
+                    writer.WriteLine("=".PadRight(80, '='));
+                    writer.WriteLine("END OF LOG");
+                    writer.WriteLine("=".PadRight(80, '='));
+                }
+            }
+            catch (Exception ex)
+            {
+                Common.LogError(ex, false, true, PluginDatabase.PluginName);
+            }
+        }
         public SteamEmulators(List<Folder> LocalFolders) : base("SteamEmulators")
         {
             AchievementsDirectories.Add("%PUBLIC%\\Documents\\Steam\\CODEX");
@@ -197,16 +408,37 @@ namespace SuccessStory.Clients
                     steamEmuLogEntries.Add($"   🔄 Merging cached data with fresh data...");
                     gameAchievementsCached.Items.ForEach(x =>
                     {
-                        Achievements finded = data.Achievements.Find(y => x.ApiName == y.ApiName);
+                        Achievements finded = data.Achievements.Find(y => string.Equals(x.ApiName, y.ApiName, StringComparison.OrdinalIgnoreCase));
                         if (finded != null)
                         {
-                            x.Name = finded.Name;
-                            if (x.DateUnlocked == null || x.DateUnlocked == default(DateTime))
+                            // Update name and description if available
+                            if (!string.IsNullOrEmpty(finded.Name))
+                                x.Name = finded.Name;
+                            if (!string.IsNullOrEmpty(finded.Description))
+                                x.Description = finded.Description;
+                            if (!string.IsNullOrEmpty(finded.UrlUnlocked))
+                                x.UrlUnlocked = finded.UrlUnlocked;
+                            if (!string.IsNullOrEmpty(finded.UrlLocked))
+                                x.UrlLocked = finded.UrlLocked;
+                                
+                            // Only update unlock date if current is locked and new is unlocked
+                            if (!IsValidUnlockDate(x.DateUnlocked) && IsValidUnlockDate(finded.DateUnlocked))
                             {
                                 x.DateUnlocked = finded.DateUnlocked;
+                                steamEmuLogEntries.Add($"      🔄 Updated unlock status for {x.ApiName}: locked → unlocked ({finded.DateUnlocked})");
+                            }
+                            else if (!x.DateUnlocked.HasValue && finded.DateUnlocked.HasValue)
+                            {
+                                x.DateUnlocked = finded.DateUnlocked;
+                                string status = IsValidUnlockDate(finded.DateUnlocked) ? "unlocked" : "locked";
+                                steamEmuLogEntries.Add($"      ➕ Added date for {x.ApiName}: {status} ({finded.DateUnlocked})");
                             }
                         }
                     });
+                    
+                    // Apply deduplication to the final merged result
+                    steamEmuLogEntries.Add($"   🔧 Applying deduplication to merged data...");
+                    gameAchievementsCached.Items = DeduplicateAchievements(gameAchievementsCached.Items, steamEmuLogEntries);
                     gameAchievementsCached.ItemsStats = data.Stats;
                     gameAchievementsCached.SetRaretyIndicator();
                     
@@ -396,7 +628,7 @@ namespace SuccessStory.Clients
                                 UrlUnlocked = string.Empty,
                                 UrlLocked = string.Empty,
                                 DateUnlocked = DateUnlocked,
-                                NoRarety = false  // Add this line
+                                NoRarety = false
                             });
                             Name = string.Empty;
                             State = false;
@@ -1530,23 +1762,34 @@ namespace SuccessStory.Clients
                 achievement.NoRarety = false;  // Explicitly ensure NoRarety is false
             }
 
+            // Apply deduplication and filtering before final processing
+            logEntries?.Add($"🔧 Pre-deduplication: {ReturnAchievements.Count} achievements");
+            ReturnAchievements = DeduplicateAchievements(ReturnAchievements, logEntries);
+
             logEntries?.Add($"🎯 FINAL Get() results: {ReturnAchievements.Count} total achievements, {ReturnStats.Count} stats");
             if (ReturnAchievements.Count > 0)
             {
                 logEntries?.Add($"   📋 Achievement breakdown:");
                 var steamLikeCount = ReturnAchievements.Count(a => string.IsNullOrEmpty(a.UrlLocked) && !string.IsNullOrEmpty(a.ApiName));
                 var steamEmuCount = ReturnAchievements.Count(a => !string.IsNullOrEmpty(a.UrlLocked));
+                var unlockedCount = ReturnAchievements.Count(a => IsValidUnlockDate(a.DateUnlocked));
                 logEntries?.Add($"     - Steam-like achievements: {steamLikeCount}");
                 logEntries?.Add($"     - SteamEmu achievements: {steamEmuCount}");
+                logEntries?.Add($"     - Unlocked achievements: {unlockedCount}");
                 
                 foreach (var ach in ReturnAchievements.Take(5))
                 {
-                    logEntries?.Add($"     - {ach.ApiName}: {(ach.DateUnlocked.HasValue ? "UNLOCKED" : "LOCKED")} (Type: {(string.IsNullOrEmpty(ach.UrlLocked) ? "Steam-like" : "SteamEmu")})");
+                    string status = IsValidUnlockDate(ach.DateUnlocked) ? "UNLOCKED" : "LOCKED";
+                    string unlockDate = ach.DateUnlocked?.ToString("yyyy-MM-dd HH:mm:ss") ?? "N/A";
+                    logEntries?.Add($"     - {ach.ApiName}: {status} ({unlockDate})");
                 }
                 if (ReturnAchievements.Count > 5)
                 {
                     logEntries?.Add($"     ... and {ReturnAchievements.Count - 5} more achievements");
                 }
+                
+                // Log all achievements for debugging
+                LogAllAchievementsFound(game, ReturnAchievements, "SteamEmulator");
             }
 
             return new SteamEmulatorData
