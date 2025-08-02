@@ -59,13 +59,13 @@ This project is licensed under the MIT License. See `LICENSE` for details.
 
 Below are some images showcasing the SuccessStoryForkByMedo plugin in action:
 
-![Achievement Overview](images/achievement-overview.png)
+![Achievement Overview](screenshots/achievement-overview.png)
 _Unified achievement view across platforms._
 
-![Plugin Settings](images/plugin-settings.png)
+![Plugin Settings](screenshots/plugin-settings.png)
 _Customizable achievement sources and display options._
 
-![Localization Example](images/localization-example.png)
+![Localization Example](screenshots/localization-example.png)
 _Multi-language support for achievement tracking._
 
 ## Unsupported Game Modifications
