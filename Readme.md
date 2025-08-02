@@ -1,5 +1,9 @@
 # SuccessStoryForkByMedo
 
+# First Of All
+
+all of this modifications are made by someone who does not even know basic syntax of C# I am just a javascript Bobo but I want t see achievements in playnite so I had to make changes to the original plugin made by Lacro59 With the help of Ai and me knowing some basic programming concepts, I was able to create this fork so please do not expect me to manage this in future.
+
 ## Overview
 
 SuccessStoryForkByMedo is a Playnite plugin designed to parse and display local achievements from various gaming platforms. It provides a unified view of your achievements, supporting both official and emulator-based sources, and offers customization options for achievement tracking and visualization.
