@@ -63,3 +63,12 @@ _Customizable achievement sources and display options._
 
 ![Localization Example](images/localization-example.png)
 _Multi-language support for achievement tracking._
+
+## Unsupported Game Modifications
+
+The following unofficial game modifications and cracks are not supported by SuccessStoryForkByMedo:
+
+- Empress
+- Goldberg
+
+Compatibility with All cracks or repacks is not guaranteed.
