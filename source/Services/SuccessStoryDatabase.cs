@@ -141,7 +141,7 @@ namespace SuccessStory.Services
                 if (gameAchievements != null && gameAchievements.HasData)
                 {
                     // eFMann - added Xbox360/Xenia
-                    if (PlayniteTools.GameUseXbox360(game) && PluginSettings.Settings.EnableXbox360Achievements)
+                    if (CommonPluginsShared.PlayniteTools.GameUseXbox360(game) && PluginSettings.Settings.EnableXbox360Achievements)
                     {
                         Xbox360Achievements xbox360Achievements = new Xbox360Achievements();
                         if (xbox360Achievements.IsConfigured())
@@ -400,7 +400,7 @@ namespace SuccessStory.Services
             ExternalPlugin pluginType = PlayniteTools.GetPluginType(game.PluginId);
             if (pluginType == ExternalPlugin.None)
             {
-                if (settings.EnableXbox360Achievements && GameUseXbox360(game)) // eFMann - added Xbox350 source
+                if (settings.EnableXbox360Achievements && CommonPluginsShared.PlayniteTools.GameUseXbox360(game)) // eFMann - added Xbox350 source
                 {
                     return AchievementSource.Xbox360;
                 }
@@ -489,7 +489,7 @@ namespace SuccessStory.Services
                     break;
 
                 case ExternalPlugin.XboxLibrary:
-                    if (settings.EnableXbox360Achievements && GameUseXbox360(game)) // eFMann
+                    if (settings.EnableXbox360Achievements && CommonPluginsShared.PlayniteTools.GameUseXbox360(game)) // eFMann
                     {
                         return AchievementSource.Xbox360;
                     }
@@ -551,7 +551,7 @@ namespace SuccessStory.Services
                     continue;
                 }
 
-                if (PlayniteTools.GameUseXbox360(game) && settings.EnableXbox360Achievements)
+                if (CommonPluginsShared.PlayniteTools.GameUseXbox360(game) && settings.EnableXbox360Achievements)
                 {
                     return AchievementSource.Xbox360;
                 }
@@ -776,7 +776,7 @@ namespace SuccessStory.Services
             ActionAfterRefresh(webItem);
         }
 
-        internal override void Refresh(IEnumerable<Guid> ids, string message)
+        internal override void Refresh(List<Guid> ids, string message)
         {
             GlobalProgressOptions options = new GlobalProgressOptions($"{PluginName} - {message}")
             {
@@ -1016,7 +1016,7 @@ namespace SuccessStory.Services
 
 
         #region Tag system
-        public override void AddTag(Game game)
+        public override void AddTag(Game game, bool noUpdate = false)
         {
             GameAchievements item = Get(game, true);
             if (item.HasAchievements)
@@ -1150,7 +1150,7 @@ namespace SuccessStory.Services
 
         public override void GetSelectData()
         {
-            OptionsDownloadData View = new OptionsDownloadData(PluginDatabase);
+            OptionsDownloadData View = new OptionsDownloadData();
             Window windowExtension = PlayniteUiHelper.CreateExtensionWindow(PluginName + " - " + ResourceProvider.GetString("LOCCommonSelectData"), View);
             _ = windowExtension.ShowDialog();
 
